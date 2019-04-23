@@ -1,0 +1,104 @@
+短息会话列表加载流程:
+1. ConversationList短息会话列表界面
+1. 开始进行加载
+ConversationList: 
+protected void onStart(){
+	...
+	// 进行异步查询
+	startAsyncQuery();
+}
+
+private void startAsyncQuery() {
+	...
+	// 加载消息
+	mLoaderFragment.reLoadMessage(THREAD_LIST_QUERY_TOKEN, // token: 1701
+	                              Conversation.sAllThreadsUri,// 查询的Uri: content://mms-sms/conversations&simple=true
+								  Conversation.ALL_THREADS_PROJECTION,// 查询的字段
+								  null, null, 
+								  Conversations.DEFAULT_SORT_ORDER);
+	...
+}
+
+2. 进入到MessageLoaderFragment, 进行加载
+MessageLoaderFragment:
+public void reLoadMessage(int loadId, Uri uri, String[] projection,
+            String selection, String[] selectionArgs, String orderBy) {
+	...
+	// 进行异步加载
+	getLoaderManager().restartLoader(loadId, null, mMessageLoaderListener);		
+}
+
+3. 进入到MmsSmsProvider中执行查询流程
+MmsSmsProvider:
+public Cursor query(Uri uri, String[] projection,
+            String selection, String[] selectionArgs, String sortOrder) {
+	...
+    switch(URI_MATCHER.match(uri)) {
+	    ...
+        case URI_CONVERSATIONS:
+            String simple = uri.getQueryParameter("simple");
+            if ((simple != null) && simple.equals("true")) {
+                String threadType = uri.getQueryParameter("thread_type"); // 获取会话类型
+                if (!TextUtils.isEmpty(threadType)) {
+                    selection = concatSelections(selection, Threads.TYPE + "=" + threadType);
+                }
+				// 获取简单会话
+                cursor = getSimpleConversations(projection, selection, selectionArgs, sortOrder);
+            } else {
+                cursor = getConversations(projection, selection, sortOrder);
+            }
+            break;		
+	    ...
+	}
+    ...
+    return cursor;	
+}
+
+private Cursor getSimpleConversations(String[] projection, String selection,
+            String[] selectionArgs, String sortOrder) {
+	// 到此处已完成会话的查询, 接下来看数据的填充
+	return mOpenHelper.getReadableDatabase().query(TABLE_THREADS, // threads数据库 
+	                                               projection, selection, 
+												   selectionArgs, null, null,
+												   " date DESC");		
+}
+
+4. 数据加载完成后回调到MessageLoaderFragment$LoaderManager.LoaderCallbacks<Cursor>中
+MessageLoaderFragment$LoaderManager.LoaderCallbacks<Cursor>:
+public void onLoadFinished(Loader<Cursor> loader, Cursor data) {
+	...
+	// 数据加载完成回调到ConversationList中
+	mListener.onMessageLoaded(data, loader);
+}
+
+5. 数据回调到ConversationList$MessageLoaderFragmentListener中
+ConversationList$MessageLoaderFragmentListener:
+public void onMessageLoaded(Cursor cursor, Loader<Cursor> loader) {
+    // 更新UI
+    mListAdapter.changeCursor(cursor);
+	... 
+}
+
+短信会话列表加载涉及到的数据库:
+MmsSmsDatabaseHelper: 
+数据库名: MmsSmsProvider:
+static final String TABLE_THREADS = "threads"
+数据库的创建:
+private void createCommonTables(SQLiteDatabase db) {
+    ...
+    db.execSQL("CREATE TABLE threads (" +
+               Threads._ID + " INTEGER PRIMARY KEY AUTOINCREMENT," +// id
+               Threads.DATE + " INTEGER DEFAULT 0," + // 时间
+               Threads.MESSAGE_COUNT + " INTEGER DEFAULT 0," + // 消息数量
+               Threads.RECIPIENT_IDS + " TEXT," + // 接受者ID
+               Threads.SNIPPET + " TEXT," + // 片段
+               Threads.SNIPPET_CHARSET + " INTEGER DEFAULT 0," + // 片段编码
+               Threads.READ + " INTEGER DEFAULT 1," + // 是否已读
+               Threads.TYPE + " INTEGER DEFAULT 0," + // 类型
+               Threads.ERROR + " INTEGER DEFAULT 0," + // 是否有错
+               Threads.HAS_ATTACHMENT + " INTEGER DEFAULT 0," + // 是否有附件
+               Threads.RECIPIENT_ADDRESSES + " TEXT, " + // 接受者地址
+               Threads.RECIPIENT_NAMES + " TEXT ); "); // 接受者姓名	
+}
+
+

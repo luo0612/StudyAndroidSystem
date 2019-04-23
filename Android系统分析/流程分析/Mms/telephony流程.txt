@@ -1,0 +1,11 @@
+ActivityManagerService.startActivityAsUser(IApplicationThread caller, 
+            String callingPackage, Intent intent, String resolvedType, 
+			IBinder resultTo, String resultWho, int requestCode, int startFlags,
+            String profileFile, ParcelFileDescriptor profileFd, Bundle options, int userId) 
+
+获得要启动的Activity的信息			
+ActivityStackSupervisor.startActivityMayWait(IApplicationThread caller, int callingUid,
+            String callingPackage, Intent intent, String resolvedType, IBinder resultTo,
+            String resultWho, int requestCode, int startFlags, String profileFile,
+            ParcelFileDescriptor profileFd, WaitResult outResult, Configuration config,
+            Bundle options, int userId)

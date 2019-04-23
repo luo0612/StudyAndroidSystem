@@ -1,0 +1,678 @@
+1. 新建一条短信, 在发送短信之前, 首先创建的是一个会话Conversation, 
+以后所有与该接收人(一个或多个接收人)的消息交互, 都在该会话Conversation中.
+ComposeMessageActivity:
+private void initActivityState(Bundle bundle) {
+	...
+    mConversation = Conversation.get(this, ContactList.getByNumbers(recipients, false /* don't block */, true /* replace number */), false);
+	...
+}
+1.1. 在创建会话的过程中会初始化一些参数, 如ThreadId
+Conversation:
+public static Conversation get(Context context, ContactList recipients, boolean allowQuery) {
+	...
+	// 重点: 创建获取ThreadId
+	long threadId = getOrCreateThreadId(context, recipients);
+	// 创建会话
+	conv = new Conversation(context, threadId, allowQuery);
+	...
+	
+}
+1.2. ThreadId贯穿着整个信息的发送流程, 因此我们需要查看ThreadId的创建流程
+public static long getOrCreateThreadId(Context context, ContactList list) {
+	...
+	long retVal = 0;
+    try {
+        retVal = Threads.getOrCreateThreadId(context, recipients, names);
+    } catch (IllegalArgumentException e) {
+        Log.e(TAG, " Failed to get or create threadId, exception : " + e);
+    }
+	...
+}
+1.3. 继续创建ThreadId
+Telephony$Threads:
+public static long getOrCreateThreadId(Context context, Set<String> recipients, Set<String> recipientNames) {
+    // 重点: THREAD_ID_CONTENT_URI = "content://mms-sms/threadID"
+	Uri.Builder uriBuilder = THREAD_ID_CONTENT_URI.buildUpon();
+	...
+	// 此处可以看见并没有对ThreadId的创建, 只有一个查询的过程
+	// 因此我们需要通过THREAD_ID_CONTENT_URI找到对应的ContentProvider, 看看查询的实现逻辑
+    Cursor cursor = SqliteWrapper.query(context, context.getContentResolver(),
+            uri, ID_PROJECTION, null, null, null);
+    if (cursor != null) {
+        try {
+            if (cursor.moveToFirst()) {
+                return cursor.getLong(0);
+            } else {
+                Rlog.e(TAG, "getOrCreateThreadId returned no rows!");
+            }
+        } finally {
+            cursor.close();
+        }
+    }
+}
+1.4. 由于上面的步骤只看见ThreadId的查询过程, 并没有看见ThreadId的创建,
+因此我们需要到短信的内容提供者MmsSmsProvider中看看ThreadId的具体查询过程
+MmsSmsProvider:
+public Cursor query(Uri uri, String[] projection, String selection, String[] selectionArgs, String sortOrder) {
+    ...
+	switch(URI_MATCHER.match(uri)) {
+	...
+    case URI_THREAD_ID: // 此处即为ThreadId的查询
+        List<String> recipients = uri.getQueryParameters("recipient");
+        List<String> recipientNames = uri.getQueryParameters("recipientNames");
+        // 获取ThreadId
+        cursor = getThreadId(recipients,recipientNames);
+        break;
+	...
+	}
+}
+
+1.5. 查看查询过程中ThreadId的具体查询过程
+MmsSmsProvider:
+private synchronized Cursor getThreadId(List<String> recipients,List<String> recipientNames) {
+    ...
+	// 重点: 根据接收人获取地址id
+	// 每个接收人的地址id, 在短信模块中有且只有一个addressId
+	// 该addressId通过接收人的号码生成, 无论联系人的姓名怎样变化, 该id都不会发生改变
+	Set<Long> addressIds = getAddressIds(recipients);
+	...
+}
+
+1.5.1. 查看联系人的addressId的查询和创建过程
+MmsSmsProvider:
+private Set<Long> getAddressIds(List<String> addresses) {
+	...
+    for (String address : addresses) {
+        if (!address.equals(PduHeaders.FROM_INSERT_ADDRESS_TOKEN_STR)) {
+		    // 获取联系人的唯一addressId
+            long id = getSingleAddressId(address);
+            if (id != -1L) {
+                result.add(id);
+            } else {
+                Log.e(LOG_TAG, "getAddressIds: address ID not found for " + address);
+            }
+        }
+    }
+	...
+}
+
+1.5.2. 继续查看联系人addressId的查询和创建过程
+MmsSmsProvider:
+private long getSingleAddressId(String address) {
+    ...
+	// 前面是一些联系人的类型判断和查询参数的拼接
+	// 注意: sql中的PHONE_NUMBERS_EQUAL函数是android独有的
+	// 查询接收人的addressId
+    cursor = db.query("canonical_addresses", ID_PROJECTION, selection, selectionArgs, null, null, null);
+    if (cursor.getCount() == 0) { // 如果之前没有改接收人的addressId
+        ContentValues contentValues = new ContentValues(1);
+        contentValues.put(CanonicalAddressesColumns.ADDRESS, refinedAddress);
+        db = mOpenHelper.getWritableDatabase();
+		// 创建接收人的addressId
+        retVal = db.insert("canonical_addresses", CanonicalAddressesColumns.ADDRESS, contentValues);
+        Log.d(LOG_TAG, "getSingleAddressId: insert new canonical_address for " +
+                /*address*/ "xxxxxx" + ", _id=" + retVal);
+        return retVal;
+    }
+
+    if (cursor.moveToFirst()) { // 如果已经有接收人的addressId, 直接获取返回
+        retVal = cursor.getLong(cursor.getColumnIndexOrThrow(BaseColumns._ID));
+    }
+
+	...
+}
+
+1.6. 在获取完所有接收的addressId, 接下来继续看获取ThreadId的流程
+MmsSmsProvider:
+private synchronized Cursor getThreadId(List<String> recipients,List<String> recipientNames) {
+	...
+	// 获取接收人的addressId
+	Set<Long> addressIds = getAddressIds(recipients);
+	...
+	// 如果有多个接收人, 需要对接收人的addressIds进行处理, 保证唯一
+	// 防止因为顺序等原因导致重复
+	recipientIds = getSpaceSeparatedNumbers(getSortedSet(addressIds));
+	...
+	// 通过接收人的addressIds进行查询
+	Cursor cursor = db.rawQuery(THREAD_QUERY, selectionArgs);
+	if (cursor.getCount() == 0) { // 如果没有查询到ThreadId, 则进行创建
+	    // 插入ThreadId
+        insertThread(recipientIds, recipients.size() ,addresses ,names);
+
+        db = mOpenHelper.getReadableDatabase();
+		// 查询ThreadId
+        cursor = db.rawQuery(THREAD_QUERY, selectionArgs);	
+	}
+	if (cursor.getCount() > 1) { // 如果查询到ThreadId, 直接返回
+        Log.w(LOG_TAG, "getThreadId: why is cursorCount=" + cursor.getCount());
+    }
+    return cursor;
+	...
+}
+
+1.6.1. 查看插入ThreadId的步骤
+MmsSmsProvider:
+private void insertThread(String recipientIds, int numberOfRecipients, String addresses ,String names) {
+    ContentValues values = new ContentValues(4);
+
+    long date = System.currentTimeMillis();
+    values.put(ThreadsColumns.DATE, date - date % 1000); // 时间
+    values.put(ThreadsColumns.RECIPIENT_IDS, recipientIds); // 接收人addressIds
+    if (numberOfRecipients > 1) {
+        values.put(Threads.TYPE, Threads.BROADCAST_THREAD); // 类型
+    }
+    values.put(ThreadsColumns.MESSAGE_COUNT, 0);// 消息数量
+    values.put(ThreadsColumns.RECIPIENT_ADDRESSES, addresses);// 接收人的号码
+    values.put(ThreadsColumns.RECIPIENT_NAMES, names);// 接收人的姓名
+
+	// TABLE_THREADS = threads
+	// 从此处可以看出, threads数据保存的是会话信息, threadId是每条会话信息的Id
+    long result = mOpenHelper.getWritableDatabase().insert(TABLE_THREADS, null, values);
+    Log.d(LOG_TAG, "insertThread: created new thread_id " + result +
+            " for recipientIds " + /*recipientIds*/ "xxxxxxx");
+   
+    getContext().getContentResolver().notifyChange(MmsSms.CONTENT_URI, null);
+}
+
+
+2. 开始进入发送短信的流程
+WorkingMessage:
+public void send(final String recipientsInUI, final int phoneId) {
+	...
+    //TODO 如果是新建短信, 则threadId为0
+    long origThreadId = mConversation.getThreadId();
+	...
+	// 短信的发送
+	// Same rules apply as above.
+	final String msgText = mText.toString();
+	// 启动线程完成发送短信的操作, 目的是不影响界面的返回
+	new Thread(new Runnable() {
+		@Override
+		public void run() {
+			/* SPRD: modify for bug260317
+			 * orig : preSendSmsWorker(conv, msgText, recipientsInUI, phoneId);  @{ */
+			// 准备短信发送工作, 包含短信发送工作sendSmsWorker
+			preSendSmsWorker(conv, mmsUri, msgText, recipientsInUI, phoneId);
+			/* @} */
+			updateSendStats(conv);
+		}
+	}, "WorkingMessage.send SMS").start();
+}
+ 
+3. 准备短信的发送工作
+WorkingMessage:
+private void preSendSmsWorker(Conversation conv, Uri mmsUri, String msgText, String recipientsInUI, int phoneId) {
+	...
+	// 重点:
+    long origThreadId = conv.getThreadId();// 新建短信的ThreadId为0
+    Log.d(TAG, "origThreadId: " + origThreadId);
+	
+	// Make sure we are still using the correct thread ID for our recipient set.
+    long threadId = conv.ensureThreadId();// 创建ThreadId
+    Log.d(TAG, "threadId: " + threadId);
+	...
+}
+
+3.1 根据接收人确保ThreadId
+Conversation:
+public synchronized long ensureThreadId() {
+    ...
+	if (mThreadId <= 0) {
+        mThreadId = getOrCreateThreadId(mContext, mRecipients);
+    }
+    ...
+}
+
+3.2 获取或创建id, 如果接收人是之前没有过短信记录, 则创建ThreadId
+注意: 如果接收人有多个, 而其中某个或者全部接收, 之前都有自己单独的信息记录, 
+此处依然会创建ThreadId
+public static long getOrCreateThreadId(Context context, ContactList list) {
+    ...
+    long retVal = 0;
+    try {
+	    // recipients: 接收人的号码
+		// names: 接收人的姓名
+        retVal = Threads.getOrCreateThreadId(context, recipients, names);
+    } catch (IllegalArgumentException e) {
+            Log.e(TAG, " Failed to get or create threadId, exception : " + e);
+    }
+	...
+}
+
+3.3 通过接收人的号码和姓名获取或创建ThreadId
+Threads:
+public static long getOrCreateThreadId(Context context, Set<String> recipients, Set<String> recipientNames) {
+	...
+	// 中间有一段设置查询参数
+    Cursor cursor = SqliteWrapper.query(context, context.getContentResolver(), uri, ID_PROJECTION, null, null, null);
+    if (cursor != null) {
+        try {
+            if (cursor.moveToFirst()) {
+                return cursor.getLong(0);
+            } else {
+                Rlog.e(TAG, "getOrCreateThreadId returned no rows!");
+            }
+        } finally {
+            cursor.close();
+        }
+    }
+	...
+}
+4. 获取到ThreadId, 即会话的id后, 继续消息发送的流程
+WorkingMessage:
+private void preSendSmsWorker(Conversation conv, Uri mmsUri, String msgText, String recipientsInUI, int phoneId) {
+	...
+	// 重点:
+    long origThreadId = conv.getThreadId();// 新建短信的ThreadId为0
+    Log.d(TAG, "origThreadId: " + origThreadId);
+	
+	// Make sure we are still using the correct thread ID for our recipient set.
+    long threadId = conv.ensureThreadId();// 创建ThreadId
+    Log.d(TAG, "threadId: " + threadId);
+	...
+    // 进行短信发送, 主要逻辑分为两步:
+    // 1. 创建SmsMessageSender对象
+    // 2. 调用SmsMessageSender.sendMessage继续发起发送短信请求
+    sendSmsWorker(msgText, semiSepRecipients, threadId, phoneId);
+
+    // Be paranoid and clean any draft SMS up.
+    deleteDraftSmsMessage(threadId);
+}
+
+5. 执行消息的发送
+WorkingMessage:
+private void sendSmsWorker(String msgText, String semiSepRecipients, long threadId, int phoneId) {
+    ...
+    // 1. 创建信息发送者
+    MessageSender sender;
+    if (SignatureAppend.getInstance().isSignatureEnabled()) {
+        Log.e(TAG, "sign:signatureText sender true");
+        sender = new SmsMessageSender(mActivity, dests, msgText, threadId,phoneId, signatureText);
+    } else {sender = new SmsMessageSender(mActivity, dests, msgText, threadId,phoneId);
+        Log.e(TAG, "sign:signatureText sender false");
+    }
+
+    try {
+    	// 2. 进行信息的发送
+        sender.sendMessage(threadId);
+        // Make sure this thread isn't over the limits in message count
+        Recycler.getSmsRecycler().deleteOldMessagesByThreadId(mActivity, threadId);
+    } catch (Exception e) {
+        Log.e(TAG, "Failed to send SMS message, threadId=" + threadId, e);
+    }
+}
+
+6. 将即将发送的消息, 添加到消息队列, 并发送广播
+SmsMessageSender:
+public boolean sendMessage(long token) throws MmsException {
+    return queueMessage(token);
+}
+
+private boolean queueMessage(long token) throws MmsException {
+    ...
+	// 获取编码模式: Auto, 7bit, 16bit
+    requestDeliveryReport = prefs.getBoolean(SimSettingPreferenceActivity.SMS_DELIVERY_REPORT_MODE, DEFAULT_DELIVERY_REPORT_MODE);
+	...
+	for (int i = 0; i < mNumberOfDests; i++) {
+	    // 将消息添加到消息队列
+        Sms.addMessageToUri(mContext.getContentResolver(),
+                Uri.parse("content://sms/queued"), mDests[i],
+                mMessageText, null,
+                mSignatureText, mTimestamp,
+                true /* read */,
+                requestDeliveryReport,
+                mThreadId,
+                // SPRD: Add for multi-sim module.
+                mPhoneId);
+	}
+	...
+	// 发送消息发送的广播
+    Intent intent = new Intent(SmsReceiverService.ACTION_SEND_MESSAGE,
+            null,
+            mContext,
+            SmsReceiver.class);// 发送到指定的广播接收者
+    intent.putExtra(Sms.PHONE_ID, mPhoneId);
+    mContext.sendBroadcast(intent);	
+	...
+	
+}
+
+7. 在SmsReceiver中接收处理SmsReceiverService.ACTION_SEND_MESSAGE的广播
+SmsReceiver:
+protected void onReceiveWithPrivilege(Context context, Intent intent, boolean privileged) {
+    ...
+    intent.setClass(context, SmsReceiverService.class);
+    intent.putExtra("result", getResultCode());
+    beginStartingService(context, intent);	// 启动SmsReceiverService服务, 处理消息的发送
+}
+
+8. 在SmsReceiverService进行短信发送处理
+SmsReceiverService:
+public int onStartCommand(Intent intent, int flags, int startId) {
+    Message msg = mServiceHandler.obtainMessage();
+    msg.arg1 = startId;
+    msg.obj = intent;
+    mServiceHandler.sendMessage(msg); // 发送消息到线程处理
+}
+SmsReceiverService$ServiceHandler:
+public void handleMessage(Message msg) {
+    ...
+	else if (ACTION_SEND_MESSAGE.endsWith(action)) {
+		// 处理发送消息
+        handleSendMessage(intent.getIntExtra(Sms.PHONE_ID, 0));
+    }
+	...
+}
+SmsReceiverService:
+private void handleSendMessage(int phoneId) {
+    if (!mSending) { // 未发送
+	    // 发送消息队列中的第一条消息
+        sendFirstQueuedMessage(phoneId);
+    }
+}
+public synchronized void sendFirstQueuedMessage(int selectionPhoneId) {
+    ...
+	// 查询待发送的消息
+    final Uri uri = Uri.parse("content://sms/queued");
+    ContentResolver resolver = getContentResolver();
+	// date ASC so we send out in  same order the user tried to send messages.
+    Cursor c = SqliteWrapper.query(this, resolver, uri, SEND_PROJECTION, selection, null, "date ASC");  
+    ...
+    if (c.moveToFirst()) { // 查询到有待发送的消息
+	    ...
+		// 创建消息发送器
+		SmsMessageSender sender = new SmsSingleRecipientSender(this, address, msgText, threadId, status == Sms.STATUS_PENDING, msgUri, phoneId);
+		...
+		// 发送消息
+		sender.sendMessage(SendingProgressTokenManager.NO_TOKEN);;
+        mSending = true;
+	}	
+}
+
+9. 最终在SmsSingleRecipientSender中, 执行消息的发送
+SmsSingleRecipientSender:
+public boolean sendMessage(long token) throws MmsException {
+    ...
+	// 消息管理
+    SmsManager smsManager = SmsManager.getDefault(mPhoneId);
+    ArrayList<String> messages = null;
+	// 增加签名
+    SmsSignatureAppend smsSignatureAppend = new SmsSignatureAppend(mContext, mUri);
+	// 增加签名后的消息内容
+    mMessageText = smsSignatureAppend.addSignatureToMsgText(mMessageText);	
+	...
+	// 获取编码类型, 0: Auto; 1: 7bit; 3: 16bit
+    if (OperatorUtils.OPEN_MARKET && Settings.System.getInt(mContext.getContentResolver(), Settings.System.SMS_ENCODE_TYPE, 1) == 3) {
+        messages = divideMessageFor16Bit(mMessageText); // 进行16bit编码进行消息分割
+    } else {
+        messages = smsManager.divideMessage(mMessageText);// 进行7bit编码进行消息的分割
+    }
+}
+
+9.1. 查看16bit编码进行消息分割
+private ArrayList<String> divideMessageFor16Bit(String text) {
+    int msgCount;
+    int limit;
+    int count = text.length() * 2;// 如果是16bit, 短信允许的长度为70个字符
+    if (count > SmsMessage.MAX_USER_DATA_BYTES/*140*/) { // 说明短信的条数大于1条
+    	// 因为java的除法没有小数, 因此这里直接+1条进行计算, 如5.2/2==(int)2; 而我们需要3, (5.2+1)/2==3
+        msgCount = (count + (SmsMessage.MAX_USER_DATA_BYTES_WITH_HEADER/*134*/ - 1))
+                / SmsMessage.MAX_USER_DATA_BYTES_WITH_HEADER/*134*/;
+    } else {// 说明短信的条数为1
+        msgCount = 1;
+    }
+    if (msgCount > 1) {// 如果短信的条数大于1, 则每条短信的长度为134, 会比只有1条短信少6个字节, 少的6个字节存储索引等数据
+        limit = SmsMessage.MAX_USER_DATA_BYTES_WITH_HEADER/*134*/;
+    } else {// 如果短信的条数小于1, 则短信的长度为140
+        limit = SmsMessage.MAX_USER_DATA_BYTES/*140*/;
+    }
+    ArrayList<String> result = new ArrayList<String>(msgCount);
+    int pos = 0; // Index in code units.
+    int textLen = text.length();
+    while (pos < textLen) {
+        int nextPos = 0; // Counts code units.
+        // limit/2: 实际的文本长度
+        nextPos = pos + Math.min(limit / 2, textLen - pos);// 获取截止的索引
+
+        if ((nextPos <= pos) || (nextPos > textLen)) {
+            Log.e(TAG, "fragmentText failed (" + pos + " >= " + nextPos
+                    + " or " + nextPos + " >= " + textLen + ")");
+            break;
+        }
+        result.add(text.substring(pos, nextPos));// 保存截取的信息, 注意List是有序的
+        pos = nextPos;
+    }
+    return result;
+}
+
+9.2. 查看7bit编码进行消息的分割
+SmsManager:
+public ArrayList<String> divideMessage(String text) {
+    return SmsMessage.fragmentText(text);
+}
+public static ArrayList<String> fragmentText(String text) {
+    // This function is for MO SMS
+    TextEncodingDetails ted = (useCdmaFormatForMoSms()) ?// 此处用的是gsm格式
+        com.android.internal.telephony.cdma.SmsMessage.calculateLength(text, false) :// 计算长度
+        com.android.internal.telephony.gsm.SmsMessage.calculateLength(text, false);// 执行此处
+
+    // TODO(cleanup): The code here could be rolled into the logic
+    // below cleanly if these MAX_* constants were defined more
+    // flexibly...
+
+    int limit;
+    if (ted.codeUnitSize == SmsConstants.ENCODING_7BIT) {// 执行此处
+        int udhLength;
+        if (ted.languageTable != 0 && ted.languageShiftTable != 0) {
+            udhLength = GsmAlphabet.UDH_SEPTET_COST_TWO_SHIFT_TABLES;
+        } else if (ted.languageTable != 0 || ted.languageShiftTable != 0) {
+            udhLength = GsmAlphabet.UDH_SEPTET_COST_ONE_SHIFT_TABLE;
+        } else {
+            udhLength = 0;// 执行此处
+        }
+
+        if (ted.msgCount > 1) { 
+            udhLength += GsmAlphabet.UDH_SEPTET_COST_CONCATENATED_MESSAGE/*6*/;
+        }
+
+        if (udhLength != 0) {
+            udhLength += GsmAlphabet.UDH_SEPTET_COST_LENGTH;
+        }
+        // 如果消息的条数大于1, 则limit为153, 如果消息的条数等于1, 则limit为160
+        limit = SmsConstants.MAX_USER_DATA_SEPTETS - udhLength;// 
+    } else {
+        if (ted.msgCount > 1) {
+            limit = SmsConstants.MAX_USER_DATA_BYTES_WITH_HEADER;
+        } else {
+            limit = SmsConstants.MAX_USER_DATA_BYTES;
+        }
+    }
+    
+    // 以下进行短信的分割和16bit消息的分割一致
+    int pos = 0;  // Index in code units.
+    int textLen = text.length();
+    ArrayList<String> result = new ArrayList<String>(ted.msgCount);
+    while (pos < textLen) {
+        int nextPos = 0;  // Counts code units.
+        if (ted.codeUnitSize == SmsConstants.ENCODING_7BIT) {
+            if (useCdmaFormatForMoSms() && ted.msgCount == 1) {
+                // For a singleton CDMA message, the encoding must be ASCII...
+                nextPos = pos + Math.min(limit, textLen - pos);
+            } else {
+                // For multi-segment messages, CDMA 7bit equals GSM 7bit encoding (EMS mode).
+                nextPos = GsmAlphabet.findGsmSeptetLimitIndex(text, pos, limit,
+                        ted.languageTable, ted.languageShiftTable);
+            }
+        } else {  // Assume unicode.
+            nextPos = pos + Math.min(limit / 2, textLen - pos);
+        }
+        if ((nextPos <= pos) || (nextPos > textLen)) {
+            Rlog.e(LOG_TAG, "fragmentText failed (" + pos + " >= " + nextPos + " or " +
+                      nextPos + " >= " + textLen + ")");
+            break;
+        }
+        result.add(text.substring(pos, nextPos));
+        pos = nextPos;
+    }
+    return result; 
+}
+
+9.2.1 查看文本长度的计算
+com.android.internal.telephony.gsm.SmsMessage:
+public static TextEncodingDetails calculateLength(CharSequence msgBody, boolean use7bitOnly) {
+    TextEncodingDetails ted = GsmAlphabet.countGsmSeptets(msgBody, use7bitOnly);//计算7重奏, 此处use7bitOnly==false 
+	...
+}
+9.2.2 继续文本的计算
+GsmAlphabet:
+public static TextEncodingDetails countGsmSeptets(CharSequence s, boolean use7bitOnly) {
+    ...
+    // fast path for common case where no national language shift tables are enabled
+    // 常见情况的快速路径，没有启用国家语言转换表
+    if (sEnabledSingleShiftTables.length + sEnabledLockingShiftTables.length == 0) {// 执行此处
+        TextEncodingDetails ted = new TextEncodingDetails();
+        int septets = GsmAlphabet.countGsmSeptetsUsingTables(s, use7bitOnly, 0, 0); // use7bitOnly此处为false
+        if (septets == -1) {
+            return null;
+        }
+        ted.codeUnitSize = SmsConstants.ENCODING_7BIT;
+        ted.codeUnitCount = septets;// 编码后的消息长度
+        if (septets > SmsConstants.MAX_USER_DATA_SEPTETS/*160*/) { // 说明条数大于1条
+            ted.msgCount = (septets + (SmsConstants.MAX_USER_DATA_SEPTETS_WITH_HEADER/*153*/ - 1)) /
+                    SmsConstants.MAX_USER_DATA_SEPTETS_WITH_HEADER/*153*/;// 计算条数
+            ted.codeUnitsRemaining = (ted.msgCount *
+                    SmsConstants.MAX_USER_DATA_SEPTETS_WITH_HEADER) - septets;// 获取剩余的数量
+        } else {// 说明条数为1条
+            ted.msgCount = 1;
+            ted.codeUnitsRemaining = SmsConstants.MAX_USER_DATA_SEPTETS - septets;// 获取剩余的数量
+        }
+        ted.codeUnitSize = SmsConstants.ENCODING_7BIT;// 设置为7bit编码
+        return ted;
+    }
+	...
+}
+
+9.2.3 继续文本长度的计算
+GsmAlphabet:
+public static int countGsmSeptetsUsingTables(CharSequence s, boolean use7bitOnly,// s, false
+        int languageTable, int languageShiftTable) {//0, 0
+    int count = 0;
+    int sz = s.length();
+    SparseIntArray charToLanguageTable = sCharsToGsmTables[languageTable]; // GSM 7 bit Default Alphabet Extension Table
+    SparseIntArray charToShiftTable = sCharsToShiftTables[languageShiftTable];// GSM 7 bit Default Alphabet Extension Table
+    for (int i = 0; i < sz; i++) {
+        char c = s.charAt(i);
+        if (c == GSM_EXTENDED_ESCAPE) {
+            Rlog.w(TAG, "countGsmSeptets() string contains Escape character, skipping.");
+            continue;
+        }
+        if (charToLanguageTable.get(c, -1) != -1) {
+            count++;
+        } else if (charToShiftTable.get(c, -1) != -1) {
+            count += 2; // escape + shift table index
+        } else if (use7bitOnly) {
+            count++;    // encode as space
+        } else {
+            return -1;  // caller must check for this case
+        }
+    }
+    return count;
+}
+
+10. 继续消息的发送流程
+SmsSingleRecipientSender:
+public boolean sendMessage(long token) throws MmsException {
+   ...
+    if (OperatorUtils.OPEN_MARKET && Settings.System.getInt(mContext.getContentResolver(), Settings.System.SMS_ENCODE_TYPE, 1) == 3) {
+        messages = divideMessageFor16Bit(mMessageText);
+    } else {
+        messages = smsManager.divideMessage(mMessageText);// 进行发送信息
+    }   
+	...
+	
+    // 将消息移到发件箱, 因此在content://sms/queued中只会存在待发送的信息
+    boolean moved = Sms.moveMessageToFolder(mContext, mUri, Sms.MESSAGE_TYPE_OUTBOX, 0);
+	...
+    ArrayList<PendingIntent> deliveryIntents =  new ArrayList<PendingIntent>(messageCount);
+    ArrayList<PendingIntent> sentIntents = new ArrayList<PendingIntent>(messageCount);
+    for (int i = 0; i < messageCount; i++) {
+	    // mRequestDeliveryReport: 接收人接收到消息的状态的回复
+        if (mRequestDeliveryReport && (i == (messageCount - 1))) {
+            // TODO: Fix: It should not be necessary to
+            // specify the class in this intent.  Doing that
+            // unnecessarily limits customizability.
+            deliveryIntents.add(PendingIntent.getBroadcast(
+                    mContext, 0,
+                    new Intent(
+                            MessageStatusReceiver.MESSAGE_STATUS_RECEIVED_ACTION,
+                            mUri,
+                            mContext,
+                            MessageStatusReceiver.class),
+                            0));
+        } else {
+            deliveryIntents.add(null);
+        }
+		
+		// 消息发送的意图
+        Intent intent  = new Intent(SmsReceiverService.MESSAGE_SENT_ACTION,
+                mUri,
+                mContext,
+                SmsReceiver.class);
+
+        intent.putExtra("smssignature", mMessageText);
+        int requestCode = 0;
+        if (i == messageCount -1) {
+            // Changing the requestCode so that a different pending intent
+            // is created for the last fragment with
+            // EXTRA_MESSAGE_SENT_SEND_NEXT set to true.
+            requestCode = 1;
+            intent.putExtra(SmsReceiverService.EXTRA_MESSAGE_SENT_SEND_NEXT, true);
+            intent.putExtra(Sms.PHONE_ID, mPhoneId);
+        }
+        sentIntents.add(PendingIntent.getBroadcast(mContext, requestCode, intent, 0));
+    }
+	...
+	// 执行消息的发送
+	smsManager.sendMultipartTextMessage(mDest, mServiceCenter, messages, sentIntents, deliveryIntents);
+}
+
+11. 消息发送转移至IccSmsInterfaceManager
+SmsManager:
+public void sendMultipartTextMessage(
+            String destinationAddress, String scAddress, ArrayList<String> parts,
+            ArrayList<PendingIntent> sentIntents, ArrayList<PendingIntent> deliveryIntents) {
+    ...
+    if (parts.size() > 1) {
+        try {
+            ISms iccISms = ISms.Stub.asInterface(ServiceManager.getService(TelephonyManager.getServiceName("isms", mPhoneId)));
+            if (iccISms != null) {
+			    // 发送消息, 至此Mms中的流程已经走完, 下面进入framework层的流程
+                iccISms.sendMultipartText(ActivityThread.currentPackageName(), destinationAddress, scAddress, parts, sentIntents, deliveryIntents);
+            }
+        } catch (RemoteException ex) {
+            // ignore it
+        }
+    } else {
+        ...
+		// 发送消息
+        sendTextMessage(destinationAddress, scAddress, parts.get(0),
+                sentIntent, deliveryIntent);
+    }	
+}
+
+public void sendTextMessage(
+            String destinationAddress, String scAddress, String text,
+            PendingIntent sentIntent, PendingIntent deliveryIntent) {
+    ...
+    try {
+        ISms iccISms = ISms.Stub.asInterface(ServiceManager.getService(TelephonyManager.getServiceName("isms", mPhoneId)));
+        if (iccISms != null) {
+		    // 发送消息, 至此Mms中的流程已经走完, 下面进入framework层的流程
+            iccISms.sendText(ActivityThread.currentPackageName(), destinationAddress,
+                    scAddress, text, sentIntent, deliveryIntent);
+        }
+    } catch (RemoteException ex) {
+        // ignore it
+    }	
+}
+

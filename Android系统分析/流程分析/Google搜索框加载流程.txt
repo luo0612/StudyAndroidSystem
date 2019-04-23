@@ -1,0 +1,29 @@
+Android8.1: 
+
+Google搜索框加载流程:
+Launcher3:
+setupViews(){
+	mWorkspace.bindAndInitFirstWorkspaceScreen(null /* recycled qsb */);
+} --> 
+Workspace:
+bindAndInitFirstWorkspaceScreen(View qsb){
+		//谷歌搜索框
+	    if (qsb == null) {
+            // In transposed layout, we add the QSB in the Grid. As workspace does not touch the
+            // edges, we do not need a full width QSB.
+            qsb = LayoutInflater.from(getContext())
+                    .inflate(R.layout.search_container_workspace,firstPage, false);
+        }
+}
+
+
+Hostseat:
+setupViews(){
+        // Setup the hotseat
+        mHotseat = (Hotseat) findViewById(R.id.hotseat);
+        if (mHotseat != null) {
+            mHotseat.setOnLongClickListener(this);
+        }
+}
+
+

@@ -1,0 +1,12 @@
+Pdu数据结构类的继承关系:
+GenericPdu <-- MultimediaMessagePdu <-- SendReq
+
+Pdu结构:
+SendReq{
+	PduHeaders{
+		
+	}
+	PduBody{
+		PduPart
+	}
+}

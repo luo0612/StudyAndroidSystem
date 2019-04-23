@@ -1,0 +1,48 @@
+处理通过分享(
+Intent.ACTION_SEND,
+Intent.ACTION_SEND_MULTIPLE
+), 生成彩信的流程:
+
+ComposeMessageActivity:
+onCreate() --> initialize() --> handleSendIntent() --> addAttachment()
+--> addImage() --> 
+WorkingMessage:
+setAttachment() --> 
+MessageStatusListener:
+onAttachmentChanged() --> 
+ComposeMessageActivity:
+onAttachmentChanged() --> drawTopPanel() -->
+AttachmentEditor:
+update() --> createView()(加载布局文件) -->
+Presenter:
+setView()(设置布局文件) --> present()(绑定数据)
+
+
+发送消息的流程:
+ComposeMessageActivity:
+confirmSendMessageIfNeeded() --> checkSendEmptyMsg() --> send() -->
+sendMessage() --> 
+WorkingMessage:
+send() -- > 后续在子线程中执行  --> sendMmsWorker()-->
+MessageSender:
+sendMessage() -->
+SmsManager:
+sendMultipartTextMessage()-->
+ISms:
+sendMultipartText() -->
+IccSmsInterfaceManager或CompositeIccSmsInterfaceManagerProxy(
+在frameworks/opt/telephony中,
+在PhoneGlobals(PhoneApp中初始化)中初始化
+):
+sendMultipartText()
+
+//添加到服务管理
+IccSmsInterfaceManager(){
+String serviceName = TelephonyManager.getServiceName("isms", phoneId);
+        if (ServiceManager.getService(serviceName) == null) {
+            ServiceManager.addService(serviceName, this);
+        }
+}
+
+
+

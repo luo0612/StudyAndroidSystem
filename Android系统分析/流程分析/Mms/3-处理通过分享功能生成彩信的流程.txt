@@ -1,0 +1,726 @@
+1. 查看清单文件, 得到处理发送广播(android.intent.action.SEND_MULTIPLE和android.intent.action.SEND)的是ComposeMessageActivity
+<activity android:name=".ui.ComposeMessageActivity"
+          android:configChanges="orientation|screenSize|keyboardHidden|locale|layoutDirection|fontScale"
+          android:windowSoftInputMode="stateHidden|adjustResize"
+          android:theme="@style/MmsHoloTheme"
+          android:uuiTheme="@style/MmsHoloThemeNewui"
+          android:parentActivityName=".ui.ConversationList"
+          android:launchMode="singleTop" >
+    ...
+    <intent-filter>
+        <action android:name="android.intent.action.SEND" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <data android:mimeType="image/*" />
+    </intent-filter>
+    <intent-filter>
+        <action android:name="android.intent.action.SEND" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <data android:mimeType="text/plain" />
+    </intent-filter>
+    <intent-filter>
+       <action android:name="android.intent.action.SEND" />
+       <category android:name="android.intent.category.DEFAULT" />
+       <data android:mimeType="text/x-vcard" />
+       <data android:mimeType="text/x-vCard" />
+       <data android:mimeType="text/vCard" />
+       <data android:mimeType="text/plain" />
+       <data android:mimeType="text/vcard" />
+       <data android:mimeType="text/vcalendar" />
+       <data android:mimeType="text/vCalendar" />
+       <data android:mimeType="text/x-vcalendar" />
+       <data android:mimeType="text/x-vCalendar" />
+       <data android:mimeType="text/x-Vcalendar" />
+       <data android:mimeType="text/x-VCalendar" />
+   </intent-filter>
+   <intent-filter>
+       <action android:name="android.intent.action.SEND_MULTIPLE" />
+       <category android:name="android.intent.category.DEFAULT" />
+       <data android:mimeType="image/*" />
+       <data android:mimeType="text/x-vcard" />
+       <data android:mimeType="text/x-vcalendar" />
+       <data android:mimeType="audio/*" />
+       <data android:mimeType="video/*" />
+   </intent-filter>
+   <intent-filter>
+       <action android:name="android.intent.action.SEND" />
+       <category android:name="android.intent.category.DEFAULT" />
+       <data android:mimeType="video/*" />
+   </intent-filter>
+   <intent-filter>
+        <action android:name="android.intent.action.SEND" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <data android:mimeType="audio/*" />
+    </intent-filter>
+</activity>
+
+2. 接下来查看ComposeMessageActivity是怎样处理发送广播的
+protected void onCreate(Bundle savedInstanceState) {
+    ...
+	initialize(savedInstanceState, 0);
+	...
+}
+
+public void initialize(Bundle savedInstanceState, long originalThreadId) {
+	...
+	// handleSendIntent(): 处理
+    if (savedInstanceState == null && (handleSendIntent() || handleForwardedMessage())) {
+		mShouldLoadDraft = false;
+		mIsLoadingText = false; 
+    }
+	...
+}
+
+3. 处理分享广播
+private boolean handleSendIntent() {
+    ...
+	// 获取文件类型
+	final String mimeType = intent.getType();
+    String action = intent.getAction();
+	...
+    if (Intent.ACTION_SEND.equals(action)) { // 处理发送单个文件的广播
+        if (extras.containsKey(Intent.EXTRA_STREAM)) { // 判断发送的内容, 如果是文件
+            final Uri uri = (Uri)extras.getParcelable(Intent.EXTRA_STREAM);
+            getAsyncDialog().runAsync(new Runnable() {
+                @Override
+                public void run() {
+                    isAddingMultiAttachment = false;
+					// 添加附件
+                    addAttachment(mimeType, uri, false);
+                }
+            }, null, R.string.adding_attachments_title);
+            return true;
+        } else if (extras.containsKey(Intent.EXTRA_TEXT)) { // 判断发送的内容, 如果是文本
+		    // 将发送的文本, 设置为短信的内容
+            mWorkingMessage.setText(extras.getString(Intent.EXTRA_TEXT)); 
+            return true;
+        }
+    } else if (Intent.ACTION_SEND_MULTIPLE.equals(action) &&
+            extras.containsKey(Intent.EXTRA_STREAM)) { // 处理发送多个文件的广播
+        SlideshowModel slideShow = mWorkingMessage.getSlideshow();
+        final ArrayList<Parcelable> uris = extras.getParcelableArrayList(Intent.EXTRA_STREAM);
+        int currentSlideCount = slideShow != null ? slideShow.size() : 0;
+        int importCount = uris.size();
+        if (importCount + currentSlideCount > SlideshowEditor.MAX_SLIDE_NUM) {
+            importCount = Math.min(SlideshowEditor.MAX_SLIDE_NUM - currentSlideCount,
+                    importCount);
+            Toast.makeText(ComposeMessageActivity.this,
+                    getString(R.string.too_many_attachments,
+                            SlideshowEditor.MAX_SLIDE_NUM, importCount),
+                            Toast.LENGTH_LONG).show();
+        }
+
+        // Attach all the pictures/videos asynchronously off of the UI thread.
+        // Show a progress dialog if adding all the slides hasn't finished
+        // within half a second.
+        final int numberToImport = importCount;
+        isAddingMultiAttachment = true;
+        getAsyncDialog().runAsync(new Runnable() {
+            @Override
+            public void run() {
+                for (int i = 0; i < numberToImport; i++) {
+                    Parcelable uri = uris.get(i);
+					// 添加附件, 当发送多个文件的时候, 只能发送同一类型的文件
+                    addAttachment(mimeType, (Uri) uri, true);
+                    if(mSizeExceed){ // 附件大小超过限制
+                        break;
+                    }
+                }
+                mResizeImageCount = 0;
+            }
+        }, new Runnable() {
+            @Override
+            public void run() {
+                if(mSizeExceed){ // 附件大小超过限制进行提示
+                    Resources res = getResources();
+                    String title = res.getString(R.string.exceed_message_size_limitation, mimeType);
+                    String message = res.getString(R.string.unable_to_add_all);
+                    MessageUtils.showErrorDialog(ComposeMessageActivity.this, title, message);
+                }
+                mSizeExceed = false;
+            }
+        }, R.string.adding_attachments_title);
+        return true;
+    }	
+}
+
+4. 查看消息附件的添加
+// mVideoUri will look like this: content://media/external/video/media
+private static final String mVideoUri = Video.Media.getContentUri("external").toString();
+// mImageUri will look like this: content://media/external/images/media
+private static final String mImageUri = Images.Media.getContentUri("external").toString();
+
+private void addAttachment(String type, Uri uri, boolean append) {
+    if (uri != null) {
+        // When we're handling Intent.ACTION_SEND_MULTIPLE, the passed in items can be
+        // videos, and/or images, and/or some other unknown types we don't handle. When
+        // a single attachment is "shared" the type will specify an image or video. When
+        // there are multiple types, the type passed in is "*/*". In that case, we've got
+        // to look at the uri to figure out if it is an image or video.
+        boolean wildcard = "*/*".equals(type); // 判断文件类型是否匹配MIME类型
+
+        if(wildcard){
+            if("file".equals(uri.getScheme())){ // 文件类型
+                String tmp = MessageUtils.getTypeFromFile(uri); // 获取文件的MIME类型
+                if(tmp != null && !tmp.isEmpty()){
+                    type = tmp;
+                }
+            }else if("content".equals(uri.getScheme())){ // 针对content类型进行处理
+                ContentResolver cr = this.getContentResolver();
+                Cursor c = cr.query(uri, null, null, null, null);
+                String tmp = null;
+                try {
+                    if(c != null && c.moveToFirst()){
+                        try{
+                            tmp = c.getString(c.getColumnIndexOrThrow( Audio.Media.MIME_TYPE));
+                        }catch(IllegalArgumentException e){
+                            tmp = c.getString(c.getColumnIndexOrThrow("mimetype"));
+                        }
+                    }
+                }catch(IllegalArgumentException e){
+                    tmp = null;
+                }finally{
+                    if(c != null){
+                        c.close();
+                    }
+                }
+
+                if(tmp != null && !tmp.isEmpty()){
+                    type = tmp;
+                }
+            }
+        }
+        
+		// 只针对以下几种类型的文件进行处理, 根据不同类型的文件, 显示不同类型的条目
+        if (type.startsWith("image/") || (wildcard && uri.toString().startsWith(mImageUri))) { // 图片
+            addImage(uri, append);
+        } else if (type.startsWith("video/") ||
+                (wildcard && uri.toString().startsWith(mVideoUri))) { // 视频
+            addVideo(uri, append);
+        } else if (type.toLowerCase().equals("text/x-vcard") || (wildcard && uri.toString().endsWith(".vcf"))) { // 明信片
+            addVcard(uri, append);
+        } else if (type.toLowerCase().equals("text/x-vcalendar")
+                || (wildcard && uri.toString().endsWith(".vcs"))) { // 日历
+            addVcalendar(uri, append);
+        } else if (type.startsWith("audio/") ||
+                (wildcard && uri.toString().startsWith(mAudioUri))) { // 音频
+            addAudio(uri);
+        } 
+		...
+    }
+}
+
+4.0.1: 查看怎样获取文件MIME类型
+MessageUtils:
+public static String getTypeFromFile(Uri uri) {
+    String path = uri.getPath();
+    String src = path.substring(path.lastIndexOf('/') + 1); // 获取文件名称
+    MimeTypeMap mimeTypeMap = MimeTypeMap.getSingleton(); // 获取MIME类型的映射表
+    String extension = MimeTypeMap.getFileExtensionFromUrl(src);// 获取图片的扩展名称
+    String type = "*/*";
+    if (TextUtils.isEmpty(extension)) {
+        // getMimeTypeFromExtension() doesn't handle spaces in filenames nor
+        // can it handle
+        // urlEncoded strings. Let's try one last time at finding the
+        // extension.
+        int dotPos = src.lastIndexOf('.');
+        if (0 <= dotPos) {
+            extension = src.substring(dotPos + 1);
+        }
+    }
+	// 获取文件的MIME类型
+    type = mimeTypeMap.getMimeTypeFromExtension(extension.toLowerCase());
+    return type;
+}
+
+4.0.1.1 查看获取文件的扩展名称
+MimeTypeMap:
+public static String getFileExtensionFromUrl(String url) {
+    if (!TextUtils.isEmpty(url)) {
+        int fragment = url.lastIndexOf('#');
+        if (fragment > 0) {
+            url = url.substring(0, fragment);
+        }
+
+        int query = url.lastIndexOf('?');
+        if (query > 0) {
+            url = url.substring(0, query);
+        }
+
+        int filenamePos = url.lastIndexOf('/');
+        String filename =
+            0 <= filenamePos ? url.substring(filenamePos + 1) : url;
+			
+        // 上面对文件名如果含有参数, 进行的一些处理
+        // if the filename contains special characters, we don't
+        // consider it valid for our matching purposes:
+        if (!filename.isEmpty() &&
+            // \u4e00-\u9fa5中文第一个文字和最后一个文字的Unicode编码
+			// \\. 对 . 进行转义
+			// \\- 对 - 进行转义
+			// \\( 对 ( 进行转义
+			// \\) 对 ) 进行转义
+			// \\% 对 % 进行转义
+            Pattern.matches("[a-zA-Z_0-9\\.\\-\\(\\)\\%\u4e00-\u9fa5]+", filename)) {
+            int dotPos = filename.lastIndexOf('.');
+            if (0 <= dotPos) {
+                return filename.substring(dotPos + 1);// 获取文件的类型
+            }
+        }
+    }
+
+    return "";
+}
+
+4.1. 查看添加图片附件
+private void addImage(final Uri uri, final boolean append) {
+    ...
+	// 设置附件
+	int result = mWorkingMessage.setAttachment(WorkingMessage.IMAGE, uri, append);
+	...
+    if (result == WorkingMessage.IMAGE_TOO_LARGE || // 文件太大
+        result == WorkingMessage.MESSAGE_SIZE_EXCEEDED) { // 超出消息大小的限制
+        if (Log.isLoggable(LogTag.APP, Log.VERBOSE)) {
+            log("resize image " + uri);
+        }
+		// 异步处理图片
+        MessageUtils.resizeImageAsync(ComposeMessageActivity.this,
+                uri, mAttachmentEditorHandler, mResizeImageCallback, append);
+        return;
+    }	
+}
+
+4.1.1. 我们首先查看是怎样异步处理文件大小的
+WorkingMessage: 
+/**
+ * The quality parameter which is used to compress JPEG images.
+ * 最大压缩
+ */
+public static final int IMAGE_COMPRESSION_QUALITY = 95;
+/**
+ * The minimum quality parameter which is used to compress JPEG images.
+ 最小压缩
+ */
+public static final int MINIMUM_IMAGE_COMPRESSION_QUALITY = 50;
+
+/**
+ * Message overhead that reduces the maximum image byte size.
+ * 5000 is a realistic overhead number that allows for user to also include
+ * a small MIDI file or a couple pages of text along with the picture.
+ */
+public static final int MESSAGE_OVERHEAD = 5000;
+public static void resizeImageAsync(final Context context,
+        final Uri imageUri, final Handler handler,
+        final ResizeImageResultCallback cb,
+        final boolean append) {
+    ...
+    new Thread(new Runnable() {
+        @Override
+        public void run() {
+            final PduPart part;
+            try {
+                UriImage image = new UriImage(context, imageUri);
+                int widthLimit = MmsConfig.getMaxImageWidth(); // 获取图片最大宽度640
+                int heightLimit = MmsConfig.getMaxImageHeight(); // 获取图片最大高度480
+                // In mms_config.xml, the max width has always been declared larger than the max
+                // height. Swap the width and height limits if necessary so we scale the picture
+                // as little as possible.
+                if (image.getHeight() > image.getWidth()) { // 判断图片的宽高方向是否和配置的一致
+                    int temp = widthLimit;
+                    widthLimit = heightLimit;
+                    heightLimit = temp;
+                }
+                // PduPart: 彩信格式
+				// 获取处理后的图片的PduPart
+                part = image.getResizedImageAsPart(
+                    widthLimit,
+                    heightLimit,
+                    MmsConfig.getMaxMessageSize() - MESSAGE_OVERHEAD);
+            } finally {
+                // Cancel pending show of the progress toast if necessary.
+                handler.removeCallbacks(showProgress);
+            }
+
+            handler.post(new Runnable() {
+                @Override
+                public void run() {
+                    cb.onResizeResult(part, append);
+                }
+            });
+        }
+    }, "MessageUtils.resizeImageAsync").start();
+}
+
+4.1.2. 查看具体处理图片
+UriImage:
+public PduPart getResizedImageAsPart(int widthLimit, int heightLimit, int byteLimit) {
+    PduPart part = new PduPart();
+    // 对图片进行压缩
+    byte[] data =  getResizedImageData(mWidth, mHeight,
+            widthLimit, heightLimit, byteLimit, mUri, mContext);
+    if (data == null) {
+        if (LOCAL_LOGV) {
+            Log.v(TAG, "Resize image failed.");
+        }
+        return null;
+    }
+
+    part.setData(data); // 设置数据
+    // getResizedImageData ALWAYS compresses to JPEG, regardless of the original content type
+	// 设置内容类型
+    part.setContentType(ContentType.IMAGE_JPEG.getBytes());
+
+    return part;
+}
+
+public static byte[] getResizedImageData(int width, int height,
+        int widthLimit, int heightLimit, int byteLimit, Uri uri, Context context) {
+    int outWidth = width;
+    int outHeight = height;
+
+    float scaleFactor = 1.F; 
+	// 超出限制, 进行缩放, 设置缩放比例
+    while ((outWidth * scaleFactor > widthLimit) || (outHeight * scaleFactor > heightLimit)) {
+        scaleFactor *= .75F;
+    }
+
+    // 此处的压缩是为了保证, 图片加载到内存, 不会造成内存溢出
+    InputStream input = null;
+    ByteArrayOutputStream os = null;
+    try {
+        int attempts = 1;
+        int sampleSize = 1;
+        BitmapFactory.Options options = new BitmapFactory.Options();
+        int quality = MessageUtils.IMAGE_COMPRESSION_QUALITY; // 图片质量: 95
+        Bitmap b = null;
+
+        // In this loop, attempt to decode the stream with the best possible subsampling (we
+        // start with 1, which means no subsampling - get the original content) without running
+        // out of memory.
+        do {
+            input = context.getContentResolver().openInputStream(uri);
+			// inSampleSize: 必须是2的倍数, 说明输出图片的宽高是原本宽高的 1/2的倍数, 
+			// 如,inSampleSize=2, 则输出图片的宽高为原本图片宽高的1/2
+            options.inSampleSize = sampleSize;
+            try {
+                b = BitmapFactory.decodeStream(input, null, options);
+                if (b == null) {
+                    return null;    // Couldn't decode and it wasn't because of an exception,
+                                    // bail.
+                }
+            } catch (OutOfMemoryError e) { // 直到压缩图片不抛出内存溢出异常
+                Log.w(TAG, "getResizedBitmap: img too large to decode (OutOfMemoryError), " +
+                        "may try with larger sampleSize. Curr sampleSize=" + sampleSize);
+                sampleSize *= 2;    // works best as a power of two
+                attempts++;
+                continue;
+            } finally {
+                if (input != null) {
+                    try {
+                        input.close();
+                    } catch (IOException e) {
+                        Log.e(TAG, e.getMessage(), e);
+                    }
+                }
+            }
+        } while (b == null && attempts < NUMBER_OF_RESIZE_ATTEMPTS /* 4 */);
+
+        if (b == null) {
+            ... 
+			// 压缩失败
+            return null;
+        }
+
+        boolean resultTooBig = true;
+        attempts = 1;   // reset count for second loop
+        // In this loop, we attempt to compress/resize the content to fit the given dimension
+        // and file-size limits.
+		// 此处的压缩, 是根据指定的图片限制进行压缩
+        do {
+            try {
+                if (options.outWidth > widthLimit || options.outHeight > heightLimit ||
+                        (os != null && os.size() > byteLimit) || mOrientation != 0) {
+                    // The decoder does not support the inSampleSize option.
+                    // Scale the bitmap using Bitmap library.
+                    int scaledWidth = (int)(outWidth * scaleFactor);
+                    int scaledHeight = (int)(outHeight * scaleFactor);
+                    ...
+					
+                    if (scaledWidth == 0) {
+                        scaledWidth = 1;
+                    }
+                    if (scaledHeight == 0) {
+                        scaledHeight = 1;
+                    }
+
+                    b = Bitmap.createScaledBitmap(b, scaledWidth, scaledHeight, false);
+                    Log.d(TAG, "getResizedImageData() mOrientation= " + mOrientation);
+                    if (mOrientation > 0)  {
+					    // 进行图片旋转
+                        b = rotateAndScale(b, mOrientation, scaledWidth, scaledHeight, false);
+                    }
+
+                    if (b == null) {
+                        // 压缩失败
+                        return null;
+                    }
+                }
+
+                ...
+				
+                os = new ByteArrayOutputStream();
+                b.compress(CompressFormat.JPEG, quality /* 95 */, os); // 进行指定图片质量进行压缩
+                int jpgFileSize = os.size();
+                if (jpgFileSize > byteLimit) { // 图片的大小还是超过限制
+                    quality = (quality * byteLimit) / jpgFileSize;  // watch for int division!
+                    if (quality < MessageUtils.MINIMUM_IMAGE_COMPRESSION_QUALITY) {
+                        quality = MessageUtils.MINIMUM_IMAGE_COMPRESSION_QUALITY; // 将图片质量设置为最小图片质量50
+                    }
+                    ...
+
+                    os = new ByteArrayOutputStream();
+                    b.compress(CompressFormat.JPEG, quality, os);
+                }
+            } catch (java.lang.OutOfMemoryError e) {
+               
+            }
+            scaleFactor *= .75F;
+            attempts++;
+            resultTooBig = os == null || os.size() > byteLimit;
+        } while (resultTooBig && attempts < NUMBER_OF_RESIZE_ATTEMPTS /* 4 */);
+
+        b.recycle();        // done with the bitmap, release the memory
+
+        return resultTooBig ? null : os.toByteArray();// 图片数据
+    } 
+	...
+}
+
+4.1.3. 查看图片压缩之后的处理, 在ComposeMessageActivity.ResizeImageResultCallback中
+ComposeMessageActivity.ResizeImageResultCallback:
+ublic void onResizeResult(PduPart part, boolean append) {
+    ...
+    if(mWorkingMessage.isDiscarded()){ // 消息被废弃
+        return;
+    }
+    Context context = ComposeMessageActivity.this;
+	// Pdu持久化
+    PduPersister persister = PduPersister.getPduPersister(context);
+    int result;
+
+    Uri messageUri;
+    synchronized (mAttachmentLock) {
+        messageUri = mWorkingMessage.saveAsMms(true);// 将消息转换为彩信
+    }
+    if (messageUri == null) {
+        result = WorkingMessage.UNKNOWN_ERROR;
+    } else {
+        try {
+            Uri dataUri;
+			// 保存数据到Pdu结构
+            dataUri = persister.persistPart(part, ContentUris.parseId(messageUri), null);
+            synchronized (mAttachmentLock) {
+			    // 设置附件
+                result = mWorkingMessage.setAttachment(WorkingMessage.IMAGE, dataUri,
+                        append, false);
+            }
+            ...
+        } catch (MmsException e) {
+            result = WorkingMessage.UNKNOWN_ERROR;
+        }
+    }
+
+    handleAddAttachmentError(result, R.string.type_picture);
+}
+
+4.1.3.1: 查看如何将普通消息转换为彩信
+WorkingMessage:
+public Uri saveAsMms(boolean notify) {
+    ...
+
+    // FORCE_MMS behaves as sort of an "invisible attachment", making
+    // the message seem non-empty (and thus not discarded).  This bit
+    // is sticky until the last other MMS bit is removed, at which
+    // point the message will fall back to SMS.
+    updateState(FORCE_MMS, true, notify); // 更新消息状态
+
+    // Collect our state to be written to disk.
+    prepareForSave(true /* notify */);// 准备保存, 设置接收人和消息模块等
+
+    try {
+        // Make sure we are saving to the correct thread ID.
+        DraftCache.getInstance().setSavingDraft(true);
+        if (!mConversation.getRecipients().isEmpty()) {
+            mConversation.ensureThreadId(); // 确定会话ID
+        }
+        mConversation.setDraftState(true); // 
+
+        PduPersister persister = PduPersister.getPduPersister(mActivity);
+        SendReq sendReq = makeSendReq(mConversation, mSubject);//设置发送信息需要的一些参数, 接收人/主题/时间 
+
+        // If we don't already have a Uri lying around, make a new one.  If we do
+        // have one already, make sure it is synced to disk.
+        if (mMessageUri == null) {
+		    // 创建草稿消息
+            mMessageUri = createDraftMmsMessage(persister, sendReq, mSlideshow, null,
+                    mActivity, null);
+        } else {
+		    // 更新草稿消息
+            updateDraftMmsMessage(mMessageUri, persister, mSlideshow, sendReq, null);
+        }
+        mHasMmsDraft = true;
+    } finally {
+        DraftCache.getInstance().setSavingDraft(false);
+    }
+    if(mMessageUri != null){
+        ContentValues values = new ContentValues();
+        values.put(Mms.TEXT_ONLY, 0);
+        SqliteWrapper.update(mActivity, mContentResolver, mMessageUri, values, null,
+                null);
+    }
+    return mMessageUri;
+}
+
+4.1.4. 保存数据到Pdu结构
+    public Uri persistPart(PduPart part, long msgId, HashMap<Uri, InputStream> preOpenedFiles)
+            throws MmsException {
+        Uri uri = Uri.parse("content://mms/" + msgId + "/part");
+        ContentValues values = new ContentValues(8);
+
+        int charset = part.getCharset();
+        if (charset != 0 ) {
+            values.put(Part.CHARSET, charset); // 设置编码
+        }
+        
+		// 获取内容类型
+        String contentType = getPartContentType(part);
+        if (contentType != null) {
+            // There is no "image/jpg" in Android (and it's an invalid mimetype).
+            // Change it to "image/jpeg"
+            if (ContentType.IMAGE_JPG.equals(contentType)) {
+                contentType = ContentType.IMAGE_JPEG;// 转换MIME类型
+            }
+
+            values.put(Part.CONTENT_TYPE, contentType);
+            // To ensure the SMIL part is always the first part.
+			// 确保是第一个部件
+            if (ContentType.APP_SMIL.equals(contentType)) {
+                values.put(Part.SEQ, -1);
+            }
+        } else {
+           ...
+        }
+
+        if (part.getFilename() != null) {
+            String fileName = new String(part.getFilename());
+            values.put(Part.FILENAME, fileName);// 设置文件名
+        }
+
+        if (part.getName() != null) {
+            String name = new String(part.getName());
+            values.put(Part.NAME, name); // 设置部件的名称
+        }
+
+        Object value = null;
+        if (part.getContentDisposition() != null) {
+            value = toIsoString(part.getContentDisposition());
+            values.put(Part.CONTENT_DISPOSITION, (String) value);
+        }
+
+        if (part.getContentId() != null) {
+             value = toIsoString(part.getContentId());
+             values.put(Part.CONTENT_ID, (String) value);// 设置content Id
+        }
+
+        if (part.getContentLocation() != null) {
+            // value = toIsoString(part.getContentLocation());
+            // values.put(Part.CONTENT_LOCATION, (String) value);
+            String location = new String(part.getContentLocation());
+            values.put(Part.CONTENT_LOCATION, location);// 设置消息定位
+        }
+        // 插入数据库
+        Uri res = SqliteWrapper.insert(mContext, mContentResolver, uri, values);
+        if (res == null) {
+            throw new MmsException("Failed to persist part, return null.");
+        }
+
+        persistData(part, res, contentType, preOpenedFiles);// 保存数据
+        // After successfully store the data, we should update
+        // the dataUri of the part.
+        part.setDataUri(res);
+
+        return res;
+    }
+4.2. 设置附件
+WorkingMessage:
+public int setAttachment(int type, Uri dataUri, boolean append) {
+    if (Log.isLoggable(LogTag.APP, Log.VERBOSE)) {
+        LogTag.debug("setAttachment type=%d uri %s", type, dataUri);
+    }
+    int result = OK;
+    SlideshowEditor slideShowEditor = new SlideshowEditor(mActivity, mSlideshow);
+
+    // Special case for deleting a slideshow. When ComposeMessageActivity gets told to
+    // remove an attachment (search for AttachmentEditor.MSG_REMOVE_ATTACHMENT), it calls
+    // this function setAttachment with a type of TEXT and a null uri. Basically, it's turning
+    // the working message from an MMS back to a simple SMS. The various attachment types
+    // use slide[0] as a special case. The call to ensureSlideshow below makes sure there's
+    // a slide zero. In the case of an already attached slideshow, ensureSlideshow will do
+    // nothing and the slideshow will remain such that if a user adds a slideshow again, they'll
+    // see their old slideshow they previously deleted. Here we really delete the slideshow.
+    if (type == TEXT && mAttachmentType == SLIDESHOW && mSlideshow != null && dataUri == null
+            && !append) {
+        slideShowEditor.removeAllSlides();
+    }
+
+    // Make sure mSlideshow is set up and has a slide.
+    ensureSlideshow();      // mSlideshow can be null before this call, won't be afterwards
+    slideShowEditor.setSlideshow(mSlideshow);
+
+    // Change the attachment
+    result = append ? appendMedia(type, dataUri, slideShowEditor)
+            : changeMedia(type, dataUri, slideShowEditor);
+
+    // If we were successful, update mAttachmentType and notify
+    // the listener than there was a change.
+    if (result == OK) {
+        mAttachmentType = type;
+    }
+    correctAttachmentState(true);   // this can remove the slideshow if there are no attachments
+
+    if (mSlideshow != null && type == IMAGE) {
+        // Prime the image's cache; helps A LOT when the image is coming from the network
+        // (e.g. Picasa album). See b/5445690.
+        int numSlides = mSlideshow.size();
+        if (numSlides > 0) {
+            ImageModel imgModel = mSlideshow.get(numSlides - 1).getImage();
+            if (imgModel != null) {
+                cancelThumbnailLoading();
+                imgModel.loadThumbnailBitmap(null);
+            }
+        }
+    }
+
+    mStatusListener.onAttachmentChanged();  // have to call whether succeeded or failed,
+                                            // because a replace that fails, removes the slide
+
+    if (!append && mAttachmentType == TEXT && type == TEXT) {
+        int[] params = SmsMessage.calculateLength(getText(), false);
+        /* SmsMessage.calculateLength returns an int[4] with:
+         *   int[0] being the number of SMS's required,
+         *   int[1] the number of code units used,
+         *   int[2] is the number of code units remaining until the next message.
+         *   int[3] is the encoding type that should be used for the message.
+         */
+        int smsSegmentCount = params[0];
+
+        if (!MmsConfig.getMultipartSmsEnabled()) {
+            // The provider doesn't support multi-part sms's so as soon as the user types
+            // an sms longer than one segment, we have to turn the message into an mms.
+            setLengthRequiresMms(smsSegmentCount > 1, false);
+        } else {
+            int threshold = MmsConfig.getSmsToMmsTextThreshold();
+            setLengthRequiresMms(threshold > 0 && smsSegmentCount > threshold, false);
+        }
+    }
+    return result;
+}

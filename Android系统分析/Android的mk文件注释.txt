@@ -1,0 +1,47 @@
+﻿LOCAL_PATH:= $(call my-dir) # 调用方法 my-dir
+include $(CLEAR_VARS)
+
+LOCAL_MODULE_TAGS := optional
+
+contacts_common_dir := ../ContactsCommon
+incallui_dir := ../InCallUI
+
+src_dirs := src $(contacts_common_dir)/src $(incallui_dir)/src
+res_dirs := res $(contacts_common_dir)/res $(incallui_dir)/res
+
+LOCAL_SRC_FILES := $(call all-java-files-under, $(src_dirs)) // 调用方法: all-java-files-under, 传入参数: $(src_dirs) 
+LOCAL_RESOURCE_DIR := $(addprefix $(LOCAL_PATH)/, $(res_dirs))
+
+LOCAL_AAPT_FLAGS := \ # 配置APPT参数, 需要了解APPT
+    --auto-add-overlay \ # 自动添加覆盖资源
+	# --extra-packages是为资源文件设置别名：意思是通过该应用包名+R，com.android.test1.R和com.android.test2.R都可以访问到资源
+    --extra-packages com.android.contacts.common \  #
+    --extra-packages com.android.incallui
+
+# 表示在编译当前APK的时候，导入framework中的一下部分jar，具体看源码该使用类所在的位置. 这里导入的是telephony-common.jar
+LOCAL_JAVA_LIBRARIES := telephony-common
+# 引用第三方的jar包
+LOCAL_STATIC_JAVA_LIBRARIES := \
+    com.android.phone.shared \
+    com.android.services.telephony.common \
+    com.android.vcard \
+    android-common \
+    guava \
+    android-support-v13 \
+    android-support-v4 \
+    android-ex-variablespeed \
+
+LOCAL_REQUIRED_MODULES := libvariablespeed
+# 表示该模块需要libvariablespeed模块，在系统编译的时候就会将libvariablespeed放入到system.img中，如果单独编译mm的话就不会关心libvariablespeed
+
+LOCAL_PACKAGE_NAME := Dialer
+LOCAL_CERTIFICATE := shared
+LOCAL_PRIVILEGED_MODULE := true
+
+LOCAL_PROGUARD_FLAG_FILES := proguard.flags $(incallui_dir)/proguard.flags
+include $(wildcard vendor/sprd/platform/frameworks/support/featurebar/apply_featurebar.mk)
+include $(wildcard vendor/sprd/platform/frameworks/support/utils/apply_utils.mk)
+include $(BUILD_PACKAGE)
+
+# Use the following include to make our test apk.
+include $(call all-makefiles-under,$(LOCAL_PATH))

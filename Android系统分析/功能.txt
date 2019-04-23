@@ -1,0 +1,105 @@
+﻿1. 布局优化
+	怎么进行布局优化
+	怎么检测分析布局优化
+	
+	每一帧16ms以内完成所有的CPU与GPU计算，绘制，渲染等等操作。
+	也就是帧率为60fps，为什么帧率要为60fps呢，因为人眼与大脑之间的协作无法感知超过60fps的画面更新。
+	开发app的性能目标就是保持60fps，这意味着每一帧你只有16ms=1000/60的时间来处理所有的任务。这里需要了解下刷新率和帧率:
+	
+	Overdraw（过度绘制）
+	减少层级，越简单越好，减少overdraw，就能更好的突出性能
+	
+	善用相对布局Relativelayout
+	
+2. 内存泄露检测工具
+3. anr情况以及检测工具
+4. gradle多渠道打包
+5. 自定义View
+6. http和https, SSL怎么验证, https的特点
+7. 304状态码 http缓存
+8. 跨平台框架
+9. kotlin和kotlin特性
+10. rehash和hash, hashmap, hash算法的用处, 头插, 尾插
+11. sp原理
+	获取操作:基于内存操作
+	commit()会导致当前线程被挂起, 在主线程谨慎使用
+	
+	文件的操作:
+		输入输出流:
+		pull解析器
+	多线程的操作:
+		线程池
+		CountDownLatch: 类似计数器
+		队列:
+12. java线程通信
+		
+13. Android里替换HashMap的类
+14. Context的设计模式
+	包装设计模式
+15. http常见错误码
+16. okhttp拦截链, 每个拦截器的作用, okhttp的哪些设计比较好
+17. 线程池几个参数的意义, 5个核心线程, 10个非核心线程 20个线程如何进行分配
+队列特点继承哪个类
+18. 判断一个单链表是否有环
+19.用过哪些锁
+20. 分享SDK
+21. 线程池
+22. Activity的启动模式
+23. rxjava的flatmap怎么实现的
+24. 性能优化
+25. webview怎么封装
+27. HashMap java1.8之后怎么优化, 红黑树和BL树的区别
+28. java内存模型
+29. javaGC算法
+30. android5.0,60,7.0,8.0新特性
+31. rxjava的dispose里面做了什么事情
+32.页面怎么做动态化
+33. 平时怎么做输出
+43. 用过的框架及原理
+44. http怎么知道文件过大时候传输完毕的响应
+45. Handler流程, 有时间的Post怎么执行的
+46. Activity的启动流程
+47. 热修复
+48. okhttp
+49. retrofit
+50. gilde缓存 lrucache, LinkHashMap , 二叉树, 扩容机制
+51. jsbridge
+52. kotlin如何简化项目
+53. react native jsx
+54. WebView和JS的交互
+55. WebView中如何处理加载的页面图片过多的问题
+56. Android中如何处理图片过大问题, 图片压缩, 三级缓存
+57. Glide如何和Android生命周期的绑定
+58. Retrofit源码
+59. ListView和RecyclerView的区别
+60. ListView的原理和复用机制
+61. Android的apk的优化
+62. 了解Framework
+63. tcp和udp的区别
+64. 三次握手
+65. 网络模块搭建
+66. https
+67. gc什么时候回收, 对什么东西回收, 错了什么操作
+68. 事件分发
+69. 微信像app发信息, app如何拦截信息
+70. 业务分为模块, 大概流程
+71. JNI
+72. activity的生命周期
+73. 线程同步
+74. kotlin怎么简化项目
+75. 协程
+76.插件化
+77. 协程, 用过哪些告诫函数
+78. apk打包过程
+79.rxjava线程切换原理
+80. apk启动过程 androidmanifest什么时候被解析
+81. okhttp原理 拦截器和android中的什么设计模式一样
+82. rn语法
+83. 小程序音视频
+84. 对前端趋势认识
+85. dagger原理
+86. 组件化
+87. jekins
+88. retrofit优缺点
+89. 协程和进程的区别
+90. css布局中的几种方式

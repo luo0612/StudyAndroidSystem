@@ -1,0 +1,75 @@
+1. 草稿的保存开始
+ComposeMessageActivity:
+protected void onStop() {
+    ...
+	saveDraft(true);
+	...
+}
+
+private void saveDraft(boolean isStopping) {
+    // TODO: Do something better here.  Maybe make discard() legal
+    // to call twice and make isEmpty() return true if discarded
+    // so it is caught in the clause above this one?
+    if (mWorkingMessage.isDiscarded()) { // 消息时候被丢弃
+        return;
+    }
+
+    if (!mWaitingForSubActivity &&
+            !mWorkingMessage.isWorthSaving() &&
+            (!isRecipientsEditorVisible() || recipientCount() == 0)) {
+        mWorkingMessage.discard(); // 丢弃消息
+        return;
+    }
+
+    mWorkingMessage.saveDraft(isStopping); // 保存到草稿箱
+    ...
+}
+
+2. 保存草稿
+public void saveDraft(final boolean isStopping) {
+    // If we have discarded the message, just bail out.
+    if (mDiscarded) {
+        LogTag.warn("saveDraft mDiscarded: true mConversation: " + mConversation +
+            " skipping saving draft and bailing");
+        return;
+    }
+
+    // Make sure setConversation was called.
+    if (mConversation == null) {
+        throw new IllegalStateException("saveDraft() called with no conversation");
+    }
+
+    if (LogTag.VERBOSE || Log.isLoggable(LogTag.APP, Log.VERBOSE)) {
+        LogTag.debug("saveDraft for mConversation " + mConversation);
+    }
+
+    // Get ready to write to disk. But don't notify message status when saving draft
+    prepareForSave(false /* notify */);
+
+    if (requiresMms()) {
+        if (hasMmsContentToSave()) {
+            asyncUpdateDraftMmsMessage(mConversation, isStopping);
+            mHasMmsDraft = true;
+        }
+    } else {
+        String content = mText.toString();
+
+        // bug 2169583: don't bother creating a thread id only to delete the thread
+        // because the content is empty. When we delete the thread in updateDraftSmsMessage,
+        // we didn't nullify conv.mThreadId, causing a temperary situation where conv
+        // is holding onto a thread id that isn't in the database. If a new message arrives
+        // and takes that thread id (because it's the next thread id to be assigned), the
+        // new message will be merged with the draft message thread, causing confusion!
+        if (!TextUtils.isEmpty(content)) {
+            asyncUpdateDraftSmsMessage(mConversation, content, isStopping);
+            mHasSmsDraft = true;
+        } else {
+            // When there's no associated text message, we have to handle the case where there
+            // might have been a previous mms draft for this message. This can happen when a
+            // user turns an mms back into a sms, such as creating an mms draft with a picture,
+            // then removing the picture.
+            asyncDeleteDraftMmsMessage(mConversation);
+            mMessageUri = null;
+        }
+    }
+}

@@ -1,0 +1,95 @@
+Activity启动流程:
+1. 应用已经被启动
+Activity:
+startActivity(){
+	// Intent intent : 包含目标Activity的报名和类名
+	// Bundle options : 跳转时携带的参数
+} --> startActivityForResult(){
+	// int requestCode: 默认为-1
+} -->
+Instrumentation:
+execStartActivity(){
+	参数:  Context who : Activity
+		   IBinder contextThread : 通过Activity.mMainThread.getApplicationThread()获取(mMainThread == ActivityThread), 
+								   mMainThread在Activity.attach()方法中赋值, 
+								   Activity.attach()在ActivityThread中被调用, 并将ActivityThread.this传入Activity.attach()方法, 从而赋值给Activity.mMainThread
+		   mToken: 当前Activity的Token, 
+			
+} --> 
+ActivityManagerNative <-- ActivityManagerService:
+startActivity(){
+} --> startActivityAsUser(){
+} --> 
+ActivityStackSupervisor:
+startActivityMayWait(){
+} --> startActivityLocked(){
+	ActivityRecord r = new ActivityRecord(): 创建ActivityRecord, 在其构造方法中默认创建Token(appToken = new Token(this)), 该Token会注册到WindowManagerService的mTokenMap中
+	mService.mIntentFirewall.checkStartActivity(): 检测意图是否被允许
+	mService.mController.activityStarting(): 检测Activity是否能够被启动
+} --> startActivityUncheckedLocked(){
+} --> 
+ActivityStack:
+startActivityLocked(){
+	// mWindowManager.addAppToken(): 添加Token至WindowManagerService中的mTokenMap中
+} --> 
+WindowManagerService:
+setAppStartingWindow(){
+	//findAppWindowToken(token.asBinder()): 从mTokenMap查找在ActivityStack.startActivityLocked()方法中添加的Token
+} --> 
+
+
+Activity生命周期流程:
+ActivityThread:
+handleLaunchActivity(){
+	Activity a = performLaunchActivity(r, customIntent){
+		// 创建Activity实例
+		java.lang.ClassLoader cl = r.packageInfo.getClassLoader();
+        activity = mInstrumentation.newActivity(cl, component.getClassName(), r.intent);
+		
+		//执行attach()方法
+		activity.attach(appContext, this, getInstrumentation(), r.token,
+		r.ident, app, r.intent, r.activityInfo, title, r.parent,
+		r.embeddedID, r.lastNonConfigurationInstances, config);
+		
+		//执行OnCreate()方法
+		mInstrumentation.callActivityOnCreate(activity, r.state);
+		
+		//执行onStart()方法
+		activity.performStart();
+		
+		//执行onRestoreInstanceState()方法
+		mInstrumentation.callActivityOnRestoreInstanceState(activity, r.state);
+		 
+		//执行onPostCreate()方法
+	}
+} --> 
+handleResumeActivity(){
+	performResumeActivity(){
+		//执行onResume()方法
+		r.activity.performResume();
+	}
+	// 添加窗口:
+	wm.addView(decor, l);
+	 
+}
+
+ActivityStack:
+resumeTopActivityLocked(){
+
+}
+
+
+
+//setContentView: 添加Window
+Activity:
+attach(){
+	//PolicyManager.makeNewWindow(): 创建Window对象
+}
+setContentView(){
+} --> 
+PhoneWindow:
+setContentView(){
+} --> 
+Window.Callback <-- Activity:
+onContentChanged(){
+} -->

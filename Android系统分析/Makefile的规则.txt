@@ -1,0 +1,73 @@
+=======Makefile的规则=======
+
+目标   : 先决条件
+target : prerequisites
+edit   : main.o kbd.o command.o display.o insert.o search.o files.o utils.o
+    执行的命令(shell命令)
+	cc -o edit main.o kbd.o command.o display.o insert.o search.o files.o utils.o
+
+目标   : 先决条件
+target : prerequisites	
+main.o : main.c defs.h
+    执行的命令
+	cc -c main.c
+	
+目标   : 先决条件
+target : prerequisites
+kbd.o  : kbd.c defs.h command.h
+    执行的命令(shell命令)
+	cc -c kbd.c
+	
+目标      : 先决条件
+target    : prerequisites
+command.o : command.c defs.h command.h
+	cc -c command.c
+
+目标      : 先决条件
+target    : prerequisites
+display.o : display.c defs.h buffer.h
+	执行的命令(shell命令, Tab键开头)
+	cc -c display.c
+	
+目标     : 先决条件
+target   : prerequisites
+insert.o : insert.c defs.h buffer.h
+	执行的命令(shell命令, Tab键开头)
+	cc -c insert.c
+	
+目标     : 先决条件
+target   : prerequisites	
+search.o : search.c defs.h buffer.h
+	执行的命令(shell命令, Tab键开头)
+	cc -c search.c
+
+目标    : 先决条件
+target  : prerequisites	
+files.o : files.c defs.h buffer.h
+	执行的命令(shell命令, Tab键开头)
+	cc -c files.c
+
+目标    : 先决条件
+target  : prerequisites
+utils.o : utils.c defs.h
+	执行的命令(shell命令, Tab键开头)
+	cc -c utils.c
+
+目标   : 先决条件
+target : prerequisites
+clean  : //clean并不是文件, 只是执行动作的名字, 要执行后面的命令需要使用make clean(make 动作的名字)
+	执行的命令(shell命令, Tab键开头)
+	rm edit main.o kbd.o command.o display.o insert.o search.o files.o utils.o
+
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	

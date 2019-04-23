@@ -1,0 +1,2 @@
+短信发送流程:
+1. WorkingMessage.send(String recipientsInUI, int phoneId)

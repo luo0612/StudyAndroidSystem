@@ -1,0 +1,39 @@
+0. Telephony
+1. Contacts
+2. MMS
+3. SystemUI
+4. Keyguard
+5. DeskClock
+
+6. PackageManager
+7. ActivityManager
+8. WindowManager
+9. 控件系统
+10. 动画系统
+11. InputMethodManager
+
+
+    // Android完成手机启动过程中, 会创建默认的数据连接, 主要步骤:
+    // 1. 初始化ApnContext, APN上下文信息
+		第一步流程: 在DcTracker的构造方法中实现, 完成相关事件的注册
+    // 2. SIM加载完成后, 设置创建DataConnection数据连接
+		第二步流程默认流程:	
+		1. UiccController.handleMessage(Message msg): 处理EVENT_ICC_STATUS_CHANGED事件, 多次执行
+		2. UiccController.handleMessage(message msg): 处理EVENT_GET_ICC_STATUS_DONE事件
+		3. UiccController.onGetIccCardStatusDone(AsyncResult ar):处理获取到的IccCard状态的结果, 并遍历通知ICC改变的通知
+		创建UiccCard->UiccCard.update(Context c, CommandsInterface ci, IccCardStatus ics)
+		4. DcTrackerBase.handleMessage(message msg): 处理DctConstants.EVENT_ICC_CHANGED事件
+		5. DcTracker.onUpdateIcc();// 进行注册并通知DctConstants.EVENT_ICC_CHANGED事件
+		6. DcTracker.handleMessage(Message msg): 处理DctConstants.EVENT_RECORDS_LOADED事件
+		7. DcTracker.onRecordsLoaded(): 加载所有的APN列表, 初始化IMSApn, 启动数据连接DataConnection
+    // 3. 激活创建的DataConnection
+		1. DcTracker.setupDataOnConnectableApns(String reason)
+		2. DcTracker.trySetupData(ApnContext apnContext)
+		3. DcTracker.setupData(ApnContext apnContext, int radioTech): 创建DataConnection, 获取到与DataConnection交互的异步通道DcAsyncChannel
+		4. DcAsyncChannel.bringUp(ApnContext apnContext, int initialMaxRetry, int profileId, int rilRadioTechnology, Message onCompletedMsg)// 发送消息到DataConnection
+	
+Phone:
+	CallTracker
+	DcTracker
+	ServiceStateTracker
+

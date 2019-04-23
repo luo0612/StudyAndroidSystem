@@ -1,0 +1,74 @@
+Mms, 加载草稿流程:
+ComposeMessageActivity:
+onCreate() --> 
+initialize() --> 
+	initActivityState(){
+		\\通过Intent获取当前WorkingMessage的Conversation
+		Uri intentData = intent.getData();
+		mConversation = Conversation.get(this, intentData, false, true);
+		mWorkingMessage.setText(getBody(intentData));
+		
+		可以通过Conversation获取到thread_id 
+		
+		\\ 通过判断模式判断, 时候显示消息列表
+		\\ 然后进行初始化当前WorkingMessage.setText(),.setSubject()
+		
+	} -->
+	
+	// WorkingMessage设置当前会话Conversation
+	 mWorkingMessage.setConversation(mConversation);
+	 
+	hideRecipientEditor(){
+		//隐藏收件人编辑框
+	} -->
+	
+onStart() -->
+	
+	loadMessageContent(){
+		// 加载消息内容
+	} --> 
+	... 延迟500ms ...
+	loadMessagesAndDraft(){
+		// 加载消息和草稿
+	} --> loadMessageContent(){
+		// 加载消息内容
+		mConversation.blockMarkAsRead(true); // 设置读取的阻塞标记
+		} --> startMsgListQuery(){
+				// 开始进行查询消息列表
+			} --> MessageLoaderFragment.reLoadMessage(){
+					
+				} --> LoaderManager.restartLoader(){
+					// 加载完成后通过回调到MessageLoaderFragmentListener.onMessageLoaded()
+					// ComposeMessageActivity 保存有MessageLoaderFragmentListener实例
+					// 即回调到ComposeMessageActivity
+				} --> MessageLoaderFragmentListener.onMessageLoaded(){
+					// 判断是查询的标识:MESSAGE_LIST_QUERY_TOKEN
+					mConversation.blockMarkAsRead(false); // 移除读取阻塞标记
+					// 更新消息列表
+					mMsgListAdapter.changeCursor(data);
+					
+					//当没有发送过消息的时候, 重新初始化
+					initRecipientsEditor();
+				}
+	  --> loadDraft(){
+			//加载草稿
+	  } --> WorkingMessage.loadDraft(){
+			// 通过会话Conversation加载草稿
+			// 通过Runnable对象回调到ComposeMessageActivity主线程
+	  } --> drawTopPanel(){
+		//更新附件, 同分享生成彩信的后续流程一致
+		// 显示附件
+		 boolean showingAttachment = mAttachmentEditor.update(mWorkingMessage);
+		 
+		//显示订阅
+	  }
+	    --> drawBottomPanel(){
+			// 进行草稿的回显
+		}
+	
+onResume() --> 
+		drawBottomPanel(){
+		
+		} --> 
+
+	
