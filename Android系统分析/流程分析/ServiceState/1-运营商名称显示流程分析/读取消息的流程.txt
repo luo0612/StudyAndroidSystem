@@ -1,0 +1,360 @@
+SIM信息的相关读取是在Uicc模块, 
+在Uicc模块中查看SIMRecords的创建流程:
+SIMRecords的创建是在UiccCardApplication中执行的:
+// 该方法用来创建SIMRecords
+private IccRecords createIccRecords(AppType type, Context c, CommandsInterface ci);
+
+网络运营商信息的读取是在ServiceState模块中读取的,
+目前我们只针对GSM进行分析, 因此我们只需在GsmServiceStateTracker中进行分析:
+// 该方法用于解析modem上报的数据, 数据中包含网络运营商等相关信息 
+public void pollStateDone() {}
+
+
+现在, 我们首先对SIMRecords向上分析:
+在UiccCardApplication中, 创建SIMRecords,是在: 
+private IccRecords createIccRecords(AppType type, Context c, CommandsInterface ci)
+方法进行的
+
+接下来查看createIccRecords()是在何处被调用:
+1. UiccCardApplication的构造方法
+UiccCardApplication(UiccCard uiccCard,IccCardApplicationStatus as,Context c,CommandsInterface ci)
+2. UiccCardApplication的update()方法:
+void update (IccCardApplicationStatus as, Context c, CommandsInterface ci) 
+
+接下来先对UiccCardApplication的构造方法进行追溯:
+发现是在UiccCard的update()方法中调用的
+1.1 UiccCard:
+public void update(Context c, CommandsInterface ci, IccCardStatus ics)
+
+接下来查看UiccCard的update()方法是在什么地方被调用:
+发现是在UiccController的onGetIccCardStatusDone()方法被调用
+1.2 UiccController:
+private synchronized void onGetIccCardStatusDone(AsyncResult ar):
+
+接下来查看UiccController的onGetIccCardStatusDone()被谁调用
+
+onGetIccCardStatusDone()是回调监听, 而改回调被注册是在UiccController的构造方法中注册的
+
+查看UiccController的创建流程:
+UiccController的创建是在:
+PhoneFactory的makeDefaultPhone()被创建 
+public static void makeDefaultPhone(Context context) 
+
+
+上面主要是SIMRecords的创建流程, 下面开始SIM卡信息的读取流程:
+
+1. 首先查看SIMRecords的构造方法:
+public SIMRecords(UiccCardApplication app, Context c, CommandsInterface ci) {
+    super(app, c, ci);
+
+    mAdnCache = new AdnRecordCache(mFh);
+
+    mVmConfig = new VoiceMailConstants();
+    mSpnOverride = new SpnOverride();
+
+    mRecordsRequested = false;  // No load request is made till SIM ready
+
+    // recordsToLoad is set to 0 because no requests are made yet
+    mRecordsToLoad = 0;
+
+    mCi.setOnSmsOnSim(this, EVENT_SMS_ON_SIM, null);
+    mCi.registerForIccRefresh(this, EVENT_SIM_REFRESH, null);
+
+    // Start off by setting empty state
+    resetRecords();// 重置SIM卡的相关状态
+	// 注册EVENT_APP_READY消息, 该消息被注册到UiccCardApplication中,
+	// 当UiccApplication的update()方法被调用时, 执行回调
+	// 而UiccApplication的update()方法的调用已经在上面说明
+    mParentApp.registerForReady(this, EVENT_APP_READY, null);
+    if (DBG) log("SIMRecords X ctor this=" + this);
+}
+
+2. 接下来看SIMRecord对 EVENT_APP_READY 消息的处理:
+public void handleMessage(Message msg) {
+    AsyncResult ar;
+    AdnRecord adn;
+
+    byte data[];
+
+    boolean isRecordLoadResponse = false;
+
+    if (mDestroyed.get()) {
+        loge("Received message " + msg + "[" + msg.what + "] " +
+                " while being destroyed. Ignoring.");
+        return;
+    }
+
+    try { switch (msg.what) {
+        case EVENT_APP_READY:
+            onReady();// 
+            break;
+	    ...
+	}
+}
+
+@Override
+public void onReady() {
+    fetchSimRecords();
+}
+
+protected void fetchSimRecords() {
+    mRecordsRequested = true;
+
+    if (DBG) log("fetchSimRecords " + mRecordsToLoad);
+
+    mCi.getIMSIForApp(mParentApp.getAid(), obtainMessage(EVENT_GET_IMSI_DONE));
+    mRecordsToLoad++;
+
+    mFh.loadEFTransparent(EF_ICCID, obtainMessage(EVENT_GET_ICCID_DONE));
+    mRecordsToLoad++;
+
+    // FIXME should examine EF[MSISDN]'s capability configuration
+    // to determine which is the voice/data/fax line
+    new AdnRecordLoader(mFh).loadFromEF(EF_MSISDN, EF_EXT1, 1,
+                obtainMessage(EVENT_GET_MSISDN_DONE));
+    mRecordsToLoad++;
+
+    // Record number is subscriber profile
+    mFh.loadEFLinearFixed(EF_MBI, 1, obtainMessage(EVENT_GET_MBI_DONE));
+    mRecordsToLoad++;
+
+    mFh.loadEFTransparent(EF_AD, obtainMessage(EVENT_GET_AD_DONE));
+    mRecordsToLoad++;
+
+    // Record number is subscriber profile
+    mFh.loadEFLinearFixed(EF_MWIS, 1, obtainMessage(EVENT_GET_MWIS_DONE));
+    mRecordsToLoad++;
+
+
+    // Also load CPHS-style voice mail indicator, which stores
+    // the same info as EF[MWIS]. If both exist, both are updated
+    // but the EF[MWIS] data is preferred
+    // Please note this must be loaded after EF[MWIS]
+    mFh.loadEFTransparent(
+            EF_VOICE_MAIL_INDICATOR_CPHS,
+            obtainMessage(EVENT_GET_VOICE_MAIL_INDICATOR_CPHS_DONE));
+    mRecordsToLoad++;
+
+    // Same goes for Call Forward Status indicator: fetch both
+    // EF[CFIS] and CPHS-EF, with EF[CFIS] preferred.
+    mFh.loadEFLinearFixed(EF_CFIS, 1, obtainMessage(EVENT_GET_CFIS_DONE));
+    mRecordsToLoad++;
+    mFh.loadEFTransparent(EF_CFF_CPHS, obtainMessage(EVENT_GET_CFF_DONE));
+    mRecordsToLoad++;
+
+    // 我们需要的是SPN所以看此处
+    getSpnFsm(true, null);
+
+    mFh.loadEFTransparent(EF_SPDI, obtainMessage(EVENT_GET_SPDI_DONE));
+    mRecordsToLoad++;
+
+    mFh.loadEFLinearFixed(EF_PNN, 1, obtainMessage(EVENT_GET_PNN_DONE));
+    mRecordsToLoad++;
+
+    mFh.loadEFTransparent(EF_SST, obtainMessage(EVENT_GET_SST_DONE));
+    mRecordsToLoad++;
+
+    mFh.loadEFTransparent(EF_INFO_CPHS, obtainMessage(EVENT_GET_INFO_CPHS_DONE));
+    mRecordsToLoad++;
+
+    mFh.loadEFTransparent(EF_CSP_CPHS,obtainMessage(EVENT_GET_CSP_CPHS_DONE));
+    mRecordsToLoad++;
+
+    mFh.loadEFTransparent(EF_GID1, obtainMessage(EVENT_GET_GID1_DONE));
+    mRecordsToLoad++;
+
+    // XXX should seek instead of examining them all
+    if (false) { // XXX
+        mFh.loadEFLinearFixedAll(EF_SMS, obtainMessage(EVENT_GET_ALL_SMS_DONE));
+        mRecordsToLoad++;
+    }
+
+    if (CRASH_RIL) {
+        String sms = "0107912160130310f20404d0110041007030208054832b0120"
+                     + "fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+                     + "fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+                     + "fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+                     + "fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+                     + "ffffffffffffffffffffffffffffff";
+        byte[] ba = IccUtils.hexStringToBytes(sms);
+
+        mFh.updateEFLinearFixed(EF_SMS, 1, ba, null,
+                        obtainMessage(EVENT_MARK_SMS_READ_DONE, 1));
+    }
+    if (DBG) log("fetchSimRecords " + mRecordsToLoad + " requested: " + mRecordsRequested);
+}
+
+
+/**
+ * Finite State Machine to load Service Provider Name , which can be stored
+ * in either EF_SPN (3GPP), EF_SPN_CPHS, or EF_SPN_SHORT_CPHS (CPHS4.2)
+ *
+ * After starting, FSM will search SPN EFs in order and stop after finding
+ * the first valid SPN
+ *
+ * If the FSM gets restart while waiting for one of
+ * SPN EFs results (i.e. a SIM refresh occurs after issuing
+ * read EF_CPHS_SPN), it will re-initialize only after
+ * receiving and discarding the unfinished SPN EF result.
+ *
+ * @param start set true only for initialize loading
+ * @param ar the AsyncResult from loadEFTransparent
+ *        ar.exception holds exception in error
+ *        ar.result is byte[] for data in success
+ */
+private void getSpnFsm(boolean start, AsyncResult ar) {
+    byte[] data;
+
+    if (start) {
+        // Check previous state to see if there is outstanding
+        // SPN read
+        if(mSpnState == GetSpnFsmState.READ_SPN_3GPP ||
+           mSpnState == GetSpnFsmState.READ_SPN_CPHS ||
+           mSpnState == GetSpnFsmState.READ_SPN_SHORT_CPHS ||
+           mSpnState == GetSpnFsmState.INIT) {
+            // Set INIT then return so the INIT code
+            // will run when the outstanding read done.
+            mSpnState = GetSpnFsmState.INIT;
+            return;
+        } else {
+            mSpnState = GetSpnFsmState.INIT;
+        }
+    }
+	// 执行顺序INIT --> READ_SPN_3GPP --> READ_SPN_CPHS --> READ_SPN_SHORT_CPHS, 执行顺序由3GPP协议确定
+    switch(mSpnState){
+        case INIT:
+            mSpn = null;
+            // 加载EF_SPN, 回调到 EVENT_GET_SPN_DONE 消息处理
+            mFh.loadEFTransparent(EF_SPN,
+                    obtainMessage(EVENT_GET_SPN_DONE));
+            mRecordsToLoad++;
+
+            mSpnState = GetSpnFsmState.READ_SPN_3GPP;
+            break;
+        case READ_SPN_3GPP:
+		    
+            if (ar != null && ar.exception == null) {
+			    // EF_SPN 加载成功
+                data = (byte[]) ar.result;
+                mSpnDisplayCondition = 0xff & data[0];
+                mSpn = IccUtils.adnStringFieldToString(data, 1, data.length - 1);
+
+                if (DBG) log("Load EF_SPN: " + mSpn
+                        + " spnDisplayCondition: " + mSpnDisplayCondition);
+                SystemProperties.set(PROPERTY_ICC_OPERATOR_ALPHA, mSpn);
+
+                mSpnState = GetSpnFsmState.IDLE;
+            } else {
+			    // EF_SPN 加载失败, 加载 EF_SPN_CPHS, 回调到 EVENT_GET_SPN_DONE 消息处理
+                mFh.loadEFTransparent( EF_SPN_CPHS,
+                        obtainMessage(EVENT_GET_SPN_DONE));
+                mRecordsToLoad++;
+
+                mSpnState = GetSpnFsmState.READ_SPN_CPHS;
+
+                // See TS 51.011 10.3.11.  Basically, default to
+                // show PLMN always, and SPN also if roaming.
+                mSpnDisplayCondition = -1;
+            }
+            break;
+        case READ_SPN_CPHS:
+            if (ar != null && ar.exception == null) {
+			    // 加载 EF_SPN_CPHS 成功
+                data = (byte[]) ar.result;
+                mSpn = IccUtils.adnStringFieldToString(data, 0, data.length);
+
+                if (DBG) log("Load EF_SPN_CPHS: " + mSpn);
+                SystemProperties.set(PROPERTY_ICC_OPERATOR_ALPHA, mSpn);
+
+                mSpnState = GetSpnFsmState.IDLE;
+            } else {
+			    // 加载 EF_SPN_CPHS 失败, 加载 EF_SPN_SHORT_CPHS, 回调到 EVENT_GET_SPN_DONE 消息处理
+                mFh.loadEFTransparent(
+                        EF_SPN_SHORT_CPHS, obtainMessage(EVENT_GET_SPN_DONE));
+                mRecordsToLoad++;
+
+                mSpnState = GetSpnFsmState.READ_SPN_SHORT_CPHS;
+            }
+            break;
+        case READ_SPN_SHORT_CPHS:
+            if (ar != null && ar.exception == null) {
+			    // 加载 EF_SPN_SHORT_CPHS 成功
+                data = (byte[]) ar.result;
+                mSpn = IccUtils.adnStringFieldToString(data, 0, data.length);
+
+                if (DBG) log("Load EF_SPN_SHORT_CPHS: " + mSpn);
+                SystemProperties.set(PROPERTY_ICC_OPERATOR_ALPHA, mSpn);
+            }else {
+                if (DBG) log("No SPN loaded in either CHPS or 3GPP");
+            }
+
+            mSpnState = GetSpnFsmState.IDLE;
+            break;
+        default:
+            mSpnState = GetSpnFsmState.IDLE;
+    }
+}
+
+查看EVENT_GET_SPN_DONE消息的处理:
+@Override
+public void handleMessage(Message msg) {
+	try { switch (msg.what) {
+		case EVENT_GET_SPN_DONE:
+			isRecordLoadResponse = true;
+			ar = (AsyncResult) msg.obj;
+			getSpnFsm(false, ar);// 继续执行getSpnFsm()方法
+		break;
+    } finally {
+        // Count up record load responses even if they are fails
+        if (isRecordLoadResponse) {
+            onRecordLoaded();
+        }
+    }
+}
+
+
+protected void onRecordLoaded() {
+    // One record loaded successfully or failed, In either case
+    // we need to update the recordsToLoad count
+    mRecordsToLoad -= 1;
+    if (DBG) log("onRecordLoaded " + mRecordsToLoad + " requested: " + mRecordsRequested);
+
+    if (mRecordsToLoad == 0 && mRecordsRequested == true) {
+        onAllRecordsLoaded();
+    } else if (mRecordsToLoad < 0) {
+        loge("recordsToLoad <0, programmer error suspected");
+        mRecordsToLoad = 0;
+    }
+}
+
+
+@Override
+protected void onAllRecordsLoaded() {
+    if (DBG) log("record load complete");
+
+    // Some fields require more than one SIM record to set
+
+    String operator = getOperatorNumeric();
+    if (!TextUtils.isEmpty(operator)) {
+        log("onAllRecordsLoaded set 'gsm.sim.operator.numeric' to operator='" +
+                operator + "'");
+        SystemProperties.set(PROPERTY_ICC_OPERATOR_NUMERIC, operator);
+    } else {
+        log("onAllRecordsLoaded empty 'gsm.sim.operator.numeric' skipping");
+    }
+
+    if (!TextUtils.isEmpty(mImsi)) {
+        log("onAllRecordsLoaded set mcc imsi=" + mImsi);
+        SystemProperties.set(PROPERTY_ICC_OPERATOR_ISO_COUNTRY,
+                MccTable.countryCodeForMcc(Integer.parseInt(mImsi.substring(0,3))));
+    } else {
+        log("onAllRecordsLoaded empty imsi skipping setting mcc");
+    }
+
+    setVoiceMailByCountry(operator);
+    setSpnFromConfig(operator);
+
+    mRecordsLoadedRegistrants.notifyRegistrants(
+        new AsyncResult(null, null, null));
+}
+
