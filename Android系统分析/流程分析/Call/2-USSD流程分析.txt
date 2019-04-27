@@ -1,0 +1,50 @@
+1. 在PhoneUtils中的
+public static int placeCall(Context context, Phone phone, String number, Uri contactRef,
+        boolean isEmergencyCall, RawGatewayInfo gatewayInfo, CallGatewayManager callGateway) {
+	connection = app.mCM.dial(phone, numberToDial);//
+    if (phoneType == PhoneConstants.PHONE_TYPE_GSM && gatewayUri == null) {
+        status = CALL_STATUS_DIALED_MMI; // 此处的返回的状态是MMI, 因为connection为null
+    } else {
+        status = CALL_STATUS_FAILED;
+    }	
+}
+
+2. 分析CallManager.dial()分析如何分辨MMI码和手机号码
+    public Connection dial(Phone phone, String dialString) throws CallStateException {
+        Phone basePhone = getPhoneBase(phone);
+        Connection result;
+		// 判断当前是否有通话
+        if ( hasActiveFgCall() ) { 
+            Phone activePhone = getActiveFgCall().getPhone();
+            boolean hasBgCall = !(activePhone.getBackgroundCall().isIdle());
+            if(!(activePhone instanceof ImsPhone)) {
+                if (activePhone != basePhone) {
+                    if (hasBgCall) {
+                        getActiveFgCall().hangup();
+                    } else {
+                        activePhone.switchHoldingAndActive();
+                    }
+                }
+            }
+        }
+		// 进行拨打电话
+        result = basePhone.dial(dialString);
+        return result;
+    }
+	
+3. 查看Phone.dial()方法实现流程
+
+
+
+*146#
+(
+(\\*|#|\\*#|\\*\\*|##) // 开头: 以*, #, *#, **, ## 开头
+(\\d{2,3}) // 中间2个或3个数字
+(\\* // 以*开头
+([^*#]*) // 不包含 *, #
+(\\* // 以 *开头
+([^*#]*) // 不包含 *, #
+(\\*([^*#]*)(\\*([^*#]*))?)?)?)? 
+#
+)
+(.*)

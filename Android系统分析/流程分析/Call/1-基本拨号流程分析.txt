@@ -1,0 +1,673 @@
+USSD流程分析:
+
+1. MMI显示初始化:
+在PhoneUtils中的displayMMIInitiate()方法, 主要作用就是显示一个进度对话框
+
+2. MMI处理完成:
+在PhoneUtils中的displayMMIComplete()方法完成, 其作用是显示显示USSD码的处理结果对话框,
+或者显示交互的对话框, 和用户继续进行交互. 
+
+上面的两个显示都是在packages/services/Telephony模块中
+
+在USSD码的处理流程中的流转对象是MmiCode;
+
+1. 首先查看从拨号盘开始的USSD启动流程:
+首先在packages/app/Dialer应用中查看, 在拨号应用中的流程和普通的拨打电话是一致:
+在DialpadFragment的handleDialButtonPressed()方法中:
+final Intent intent = CallUtil.getCallIntent(number,
+        (getActivity() instanceof DialtactsActivity ?
+                ((DialtactsActivity) getActivity()).getCallOrigin() : null));
+startActivity(intent);
+// 查看CallUtil.getCallIntent()方法
+public static final ComponentName CALL_INTENT_DESTINATION = new ComponentName(
+            "com.android.phone", "com.android.phone.PrivilegedOutgoingCallBroadcaster");
+public static Intent getCallIntent(Uri uri, String callOrigin) {
+    
+    final Intent intent = new Intent(Intent.ACTION_CALL_PRIVILEGED, uri);
+    intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
+    if (callOrigin != null) {
+        intent.putExtra(PhoneConstants.EXTRA_CALL_ORIGIN, callOrigin);
+    }
+
+    // Set phone as an explicit component of CALL_PRIVILEGED intent.
+    // Setting destination explicitly prevents other apps from capturing this Intent since,
+    // unlike SendBroadcast, there is no API for specifying a permission on startActivity.
+    intent.setComponent(CALL_INTENT_DESTINATION);
+
+    return intent;
+}
+
+接下来在packages/services/Telephony模块中, 查看PrivilegedOutgoingCallBroadcaster:
+在清单文件中可以看见:
+<activity-alias android:name="PrivilegedOutgoingCallBroadcaster"
+        android:targetActivity="OutgoingCallBroadcaster"
+        android:screenOrientation="nosensor"
+        android:permission="android.permission.CALL_PRIVILEGED">
+    <intent-filter android:priority="1000">
+        <action android:name="android.intent.action.CALL_PRIVILEGED" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <data android:scheme="tel" />
+    </intent-filter>
+    <intent-filter android:icon="@drawable/ic_launcher_sip_call"
+            android:priority="1000">
+        <action android:name="android.intent.action.CALL_PRIVILEGED" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <data android:scheme="sip" />
+    </intent-filter>
+    <intent-filter android:priority="1000">
+        <action android:name="android.intent.action.CALL_PRIVILEGED" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <data android:scheme="voicemail" />
+    </intent-filter>
+    <intent-filter android:priority="1000">
+        <action android:name="android.intent.action.CALL_PRIVILEGED" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <data android:mimeType="vnd.android.cursor.item/phone" />
+        <data android:mimeType="vnd.android.cursor.item/phone_v2" />
+        <data android:mimeType="vnd.android.cursor.item/person" />
+    </intent-filter>
+</activity-alias>
+PrivilegedOutgoingCallBroadcaster是OutgoingCallBroadcaster的别名, 最终我们需要查看OutgoingCallBroadcaster
+<activity android:name="OutgoingCallBroadcaster"
+        android:theme="@style/OutgoingCallBroadcasterTheme"
+        android:permission="android.permission.CALL_PHONE"
+        android:screenOrientation="nosensor"
+        android:configChanges="orientation|screenSize|keyboardHidden"
+        android:excludeFromRecents="true">
+    <!-- CALL action intent filters, for the various ways
+         of initiating an outgoing call. -->
+    <intent-filter>
+        <action android:name="android.intent.action.CALL" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <data android:scheme="tel" />
+    </intent-filter>
+    <intent-filter android:icon="@drawable/ic_launcher_sip_call">
+        <action android:name="android.intent.action.CALL" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <data android:scheme="sip" />
+    </intent-filter>
+    <intent-filter>
+        <action android:name="android.intent.action.CALL" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <data android:scheme="voicemail" />
+    </intent-filter>
+    <intent-filter>
+        <action android:name="android.intent.action.CALL" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <data android:mimeType="vnd.android.cursor.item/phone" />
+        <data android:mimeType="vnd.android.cursor.item/phone_v2" />
+        <data android:mimeType="vnd.android.cursor.item/person" />
+    </intent-filter>
+</activity>
+
+查看OutgoingCallBroadcaster对拨号的处理:
+@Override
+protected void onCreate(Bundle icicle) {
+    super.onCreate(icicle);
+    setContentView(R.layout.outgoing_call_broadcaster);
+    mWaitingSpinner = (ProgressBar) findViewById(R.id.spinner);
+    Intent intent = getIntent();
+    processIntent(intent);
+}
+
+private void processIntent(Intent intent) {
+ 
+    final Configuration configuration = getResources().getConfiguration();
+    // 判断是否支持语音功能
+    if (!PhoneGlobals.sVoiceCapable) {
+        handleNonVoiceCapable(intent);
+        return;
+    }
+
+    String action = intent.getAction();
+    String number = PhoneNumberUtils.getNumberFromIntent(intent, this);
+    // 对号码进行处理
+    if (number != null) {
+        if (!PhoneNumberUtils.isUriNumber(number)) {
+            number = PhoneNumberUtils.convertKeypadLettersToDigits(number);
+            number = PhoneNumberUtils.stripSeparators(number);
+        }
+    } else {
+        Log.w(TAG, "The number obtained from Intent is null.");
+    }
+
+    // 对权限进行判断, 判断是否有拨号的权限
+    AppOpsManager appOps = (AppOpsManager)getSystemService(Context.APP_OPS_SERVICE);
+    int launchedFromUid;
+    String launchedFromPackage;
+    try {
+        launchedFromUid = ActivityManagerNative.getDefault().getLaunchedFromUid(
+                getActivityToken());
+        launchedFromPackage = ActivityManagerNative.getDefault().getLaunchedFromPackage(
+                getActivityToken());
+    } catch (RemoteException e) {
+        launchedFromUid = -1;
+        launchedFromPackage = null;
+    }
+    if (appOps.noteOpNoThrow(AppOpsManager.OP_CALL_PHONE, launchedFromUid, launchedFromPackage)
+            != AppOpsManager.MODE_ALLOWED) {
+        Log.w(TAG, "Rejecting call from uid " + launchedFromUid + " package "
+                + launchedFromPackage);
+        finish();
+        return;
+    }
+
+    // If true, this flag will indicate that the current call is a special kind
+    // of call (most likely an emergency number) that 3rd parties aren't allowed
+    // to intercept or affect in any way.  (In that case, we start the call
+    // immediately rather than going through the NEW_OUTGOING_CALL sequence.)
+    boolean callNow;
+
+    // 对拨号意图的action进行转换, 如果不是Intent.ACTION_CALL的转换为Intent.ACTION_CALL
+    if (getClass().getName().equals(intent.getComponent().getClassName())) {
+        // If we were launched directly from the OutgoingCallBroadcaster,
+        // not one of its more privileged aliases, then make sure that
+        // only the non-privileged actions are allowed.
+        if (!Intent.ACTION_CALL.equals(intent.getAction())) {
+            Log.w(TAG, "Attempt to deliver non-CALL action; forcing to CALL");
+            intent.setAction(Intent.ACTION_CALL);
+        }
+    }
+
+    // Check whether or not this is an emergency number, in order to
+    // enforce the restriction that only the CALL_PRIVILEGED and
+    // CALL_EMERGENCY intents are allowed to make emergency calls.
+    //
+    // (Note that the ACTION_CALL check below depends on the result of
+    // isPotentialLocalEmergencyNumber() rather than just plain
+    // isLocalEmergencyNumber(), to be 100% certain that we *don't*
+    // allow 3rd party apps to make emergency calls by passing in an
+    // "invalid" number like "9111234" that isn't technically an
+    // emergency number but might still result in an emergency call
+    // with some networks.)
+	// 判断是否是紧急号码
+	// 
+    final boolean isExactEmergencyNumber =
+            (number != null) && PhoneNumberUtils.isLocalEmergencyNumber(number, this);
+    // 内置的
+    final boolean isPotentialEmergencyNumber =
+            (number != null) && PhoneNumberUtils.isPotentialLocalEmergencyNumber(number, this);
+ 
+
+    /* Change CALL_PRIVILEGED into CALL or CALL_EMERGENCY as needed. */
+    // TODO: This code is redundant with some code in InCallScreen: refactor.
+	// 判断是否是内部拨号, 修改意图的Action动作
+    if (Intent.ACTION_CALL_PRIVILEGED.equals(action)) {
+        // We're handling a CALL_PRIVILEGED intent, so we know this request came
+        // from a trusted source (like the built-in dialer.)  So even a number
+        // that's *potentially* an emergency number can safely be promoted to
+        // CALL_EMERGENCY (since we *should* allow you to dial "91112345" from
+        // the dialer if you really want to.)
+        if (isPotentialEmergencyNumber) {
+            Log.i(TAG, "ACTION_CALL_PRIVILEGED is used while the number is a potential"
+                    + " emergency number. Use ACTION_CALL_EMERGENCY as an action instead.");
+            action = Intent.ACTION_CALL_EMERGENCY;
+        } else {
+            action = Intent.ACTION_CALL;
+        }
+        if (DBG) Log.v(TAG, " - updating action from CALL_PRIVILEGED to " + action);
+        intent.setAction(action);
+    }
+	// 普通拨号
+    if (Intent.ACTION_CALL.equals(action)) {
+        if (isPotentialEmergencyNumber) {// 紧急拨号
+            Log.w(TAG, "Cannot call potential emergency number '" + number
+                    + "' with CALL Intent " + intent + ".");
+            Log.i(TAG, "Launching default dialer instead...");
+
+            Intent invokeFrameworkDialer = new Intent();
+
+            // TwelveKeyDialer is in a tab so we really want
+            // DialtactsActivity.  Build the intent 'manually' to
+            // use the java resolver to find the dialer class (as
+            // opposed to a Context which look up known android
+            // packages only)
+            final Resources resources = getResources();
+            invokeFrameworkDialer.setClassName(
+                    resources.getString(R.string.ui_default_package),
+                    resources.getString(R.string.dialer_default_class));
+            invokeFrameworkDialer.setAction(Intent.ACTION_DIAL);
+            invokeFrameworkDialer.setData(intent.getData());
+            if (DBG) Log.v(TAG, "onCreate(): calling startActivity for Dialer: "
+                           + invokeFrameworkDialer);
+            startActivity(invokeFrameworkDialer);
+            finish();
+            return;
+        }
+        callNow = false;
+    } else if (Intent.ACTION_CALL_EMERGENCY.equals(action)) { // 紧急拨号
+        // ACTION_CALL_EMERGENCY case: this is either a CALL_PRIVILEGED
+        // intent that we just turned into a CALL_EMERGENCY intent (see
+        // above), or else it really is an CALL_EMERGENCY intent that
+        // came directly from some other app (e.g. the EmergencyDialer
+        // activity built in to the Phone app.)
+        // Make sure it's at least *possible* that this is really an
+        // emergency number.
+        if (!isPotentialEmergencyNumber) {
+            Log.w(TAG, "Cannot call non-potential-emergency number " + number
+                    + " with EMERGENCY_CALL Intent " + intent + "."
+                    + " Finish the Activity immediately.");
+            finish();
+            return;
+        }
+        callNow = true;
+    } else {
+        Log.e(TAG, "Unhandled Intent " + intent + ". Finish the Activity immediately.");
+        finish();
+        return;
+    }
+
+    // Make sure the screen is turned on.  This is probably the right
+    // thing to do, and more importantly it works around an issue in the
+    // activity manager where we will not launch activities consistently
+    // when the screen is off (since it is trying to keep them paused
+    // and has...  issues).
+    //
+    // Also, this ensures the device stays awake while doing the following
+    // broadcast; technically we should be holding a wake lock here
+    // as well.
+    PhoneGlobals.getInstance().wakeUpScreen();
+
+    // If number is null, we're probably trying to call a non-existent voicemail number,
+    // send an empty flash or something else is fishy.  Whatever the problem, there's no
+    // number, so there's no point in allowing apps to modify the number.
+    if (TextUtils.isEmpty(number)) {
+        if (intent.getBooleanExtra(EXTRA_SEND_EMPTY_FLASH, false)) {
+            Log.i(TAG, "onCreate: SEND_EMPTY_FLASH...");
+            PhoneUtils.sendEmptyFlash(PhoneGlobals.getPhone());
+            finish();
+            return;
+        } else {
+            Log.i(TAG, "onCreate: null or empty number, setting callNow=true...");
+            callNow = true;
+        }
+    }
+
+    if (callNow) {
+        // This is a special kind of call (most likely an emergency number)
+        // that 3rd parties aren't allowed to intercept or affect in any way.
+        // So initiate the outgoing call immediately.
+
+        Log.i(TAG, "onCreate(): callNow case! Calling placeCall(): " + intent);
+
+        // Initiate the outgoing call, and simultaneously launch the
+        // InCallScreen to display the in-call UI:
+        PhoneGlobals.getInstance().callController.placeCall(intent);// 进行拨号
+
+        // Note we do *not* "return" here, but instead continue and
+        // send the ACTION_NEW_OUTGOING_CALL broadcast like for any
+        // other outgoing call.  (But when the broadcast finally
+        // reaches the OutgoingCallReceiver, we'll know not to
+        // initiate the call again because of the presence of the
+        // EXTRA_ALREADY_CALLED extra.)
+    }
+
+    // For now, SIP calls will be processed directly without a
+    // NEW_OUTGOING_CALL broadcast.
+    //
+    // TODO: In the future, though, 3rd party apps *should* be allowed to
+    // intercept outgoing calls to SIP addresses as well.  To do this, we should
+    // (1) update the NEW_OUTGOING_CALL intent documentation to explain this
+    // case, and (2) pass the outgoing SIP address by *not* overloading the
+    // EXTRA_PHONE_NUMBER extra, but instead using a new separate extra to hold
+    // the outgoing SIP address.  (Be sure to document whether it's a URI or just
+    // a plain address, whether it could be a tel: URI, etc.)
+    Uri uri = intent.getData();
+    String scheme = uri.getScheme();
+    if (Constants.SCHEME_SIP.equals(scheme) || PhoneNumberUtils.isUriNumber(number)) { //SIP拨号
+        Log.i(TAG, "The requested number was detected as SIP call.");
+        startSipCallOptionHandler(this, intent, uri, number);
+        finish();
+        return;
+
+        // TODO: if there's ever a way for SIP calls to trigger a
+        // "callNow=true" case (see above), we'll need to handle that
+        // case here too (most likely by just doing nothing at all.)
+    }
+
+    Intent broadcastIntent = new Intent(Intent.ACTION_NEW_OUTGOING_CALL);
+    if (number != null) {
+        broadcastIntent.putExtra(Intent.EXTRA_PHONE_NUMBER, number);
+    }
+    CallGatewayManager.checkAndCopyPhoneProviderExtras(intent, broadcastIntent);
+    broadcastIntent.putExtra(EXTRA_ALREADY_CALLED, callNow);
+    broadcastIntent.putExtra(EXTRA_ORIGINAL_URI, uri.toString());
+    // Need to raise foreground in-call UI as soon as possible while allowing 3rd party app
+    // to intercept the outgoing call.
+    broadcastIntent.addFlags(Intent.FLAG_RECEIVER_FOREGROUND);
+    if (DBG) Log.v(TAG, " - Broadcasting intent: " + broadcastIntent + ".");
+
+    // Set a timer so that we can prepare for unexpected delay introduced by the broadcast.
+    // If it takes too much time, the timer will show "waiting" spinner.
+    // This message will be removed when OutgoingCallReceiver#onReceive() is called before the
+    // timeout.
+    mHandler.sendEmptyMessageDelayed(EVENT_OUTGOING_CALL_TIMEOUT,
+            OUTGOING_CALL_TIMEOUT_THRESHOLD);
+    sendOrderedBroadcastAsUser(broadcastIntent, UserHandle.OWNER,
+            PERMISSION, new OutgoingCallReceiver(),// 执行此处....
+            null,  // scheduler
+            Activity.RESULT_OK,  // initialCode
+            number,  // initialData: initial value for the result data
+            null);  // initialExtras
+}
+
+public class OutgoingCallReceiver extends BroadcastReceiver {
+    private static final String TAG = "OutgoingCallReceiver";
+
+    @Override
+    public void onReceive(Context context, Intent intent) {
+        mHandler.removeMessages(EVENT_OUTGOING_CALL_TIMEOUT);
+        final boolean isAttemptingCall = doReceive(context, intent);
+        if (isAttemptingCall) {
+            startDelayedFinish();
+        } else {
+            finish();
+        }
+    }
+}
+
+public boolean doReceive(Context context, Intent intent) {
+     
+    boolean alreadyCalled;
+    String number;
+    String originalUri;
+    
+	// 是否已经拨打过
+    alreadyCalled = intent.getBooleanExtra(
+            OutgoingCallBroadcaster.EXTRA_ALREADY_CALLED, false);
+    if (alreadyCalled) {
+        if (DBG) Log.v(TAG, "CALL already placed -- returning.");
+        return false;
+    }
+
+    // Once the NEW_OUTGOING_CALL broadcast is finished, the resultData
+    // is used as the actual number to call. (If null, no call will be
+    // placed.)
+
+    number = getResultData();
+    if (VDBG) Log.v(TAG, "- got number from resultData: '" + number + "'");
+
+    final PhoneGlobals app = PhoneGlobals.getInstance();
+
+    // OTASP-specific checks.
+    // TODO: This should probably all happen in
+    // OutgoingCallBroadcaster.onCreate(), since there's no reason to
+    // even bother with the NEW_OUTGOING_CALL broadcast if we're going
+    // to disallow the outgoing call anyway...
+    if (TelephonyCapabilities.supportsOtasp(app.phone)) {
+        boolean activateState = (app.cdmaOtaScreenState.otaScreenState
+                == OtaUtils.CdmaOtaScreenState.OtaScreenState.OTA_STATUS_ACTIVATION);
+        boolean dialogState = (app.cdmaOtaScreenState.otaScreenState
+                == OtaUtils.CdmaOtaScreenState.OtaScreenState
+                .OTA_STATUS_SUCCESS_FAILURE_DLG);
+        boolean isOtaCallActive = false;
+
+        // TODO: Need cleaner way to check if OTA is active.
+        // Also, this check seems to be broken in one obscure case: if
+        // you interrupt an OTASP call by pressing Back then Skip,
+        // otaScreenState somehow gets left in either PROGRESS or
+        // LISTENING.
+        if ((app.cdmaOtaScreenState.otaScreenState
+                == OtaUtils.CdmaOtaScreenState.OtaScreenState.OTA_STATUS_PROGRESS)
+                || (app.cdmaOtaScreenState.otaScreenState
+                == OtaUtils.CdmaOtaScreenState.OtaScreenState.OTA_STATUS_LISTENING)) {
+            isOtaCallActive = true;
+        }
+
+        if (activateState || dialogState) {
+            // The OTASP sequence is active, but either (1) the call
+            // hasn't started yet, or (2) the call has ended and we're
+            // showing the success/failure screen.  In either of these
+            // cases it's OK to make a new outgoing call, but we need
+            // to take down any OTASP-related UI first.
+            if (dialogState) app.dismissOtaDialogs();
+            app.clearOtaState();
+        } else if (isOtaCallActive) {
+            // The actual OTASP call is active.  Don't allow new
+            // outgoing calls at all from this state.
+            Log.w(TAG, "OTASP call is active: disallowing a new outgoing call.");
+            return false;
+        }
+    }
+
+    if (number == null) {
+        if (DBG) Log.v(TAG, "CALL cancelled (null number), returning...");
+        return false;
+    } else if (TelephonyCapabilities.supportsOtasp(app.phone)
+            && (app.phone.getState() != PhoneConstants.State.IDLE)
+            && (app.phone.isOtaSpNumber(number))) {
+        if (DBG) Log.v(TAG, "Call is active, a 2nd OTA call cancelled -- returning.");
+        return false;
+    } else if (PhoneNumberUtils.isPotentialLocalEmergencyNumber(number, context)) {
+        // Just like 3rd-party apps aren't allowed to place emergency
+        // calls via the ACTION_CALL intent, we also don't allow 3rd
+        // party apps to use the NEW_OUTGOING_CALL broadcast to rewrite
+        // an outgoing call into an emergency number.
+        Log.w(TAG, "Cannot modify outgoing call to emergency number " + number + ".");
+        return false;
+    }
+
+    originalUri = intent.getStringExtra(
+            OutgoingCallBroadcaster.EXTRA_ORIGINAL_URI);
+    if (originalUri == null) {
+        Log.e(TAG, "Intent is missing EXTRA_ORIGINAL_URI -- returning.");
+        return false;
+    }
+
+    Uri uri = Uri.parse(originalUri);
+
+    // We already called convertKeypadLettersToDigits() and
+    // stripSeparators() way back in onCreate(), before we sent out the
+    // NEW_OUTGOING_CALL broadcast.  But we need to do it again here
+    // too, since the number might have been modified/rewritten during
+    // the broadcast (and may now contain letters or separators again.)
+    number = PhoneNumberUtils.convertKeypadLettersToDigits(number);
+    number = PhoneNumberUtils.stripSeparators(number);
+
+    if (DBG) Log.v(TAG, "doReceive: proceeding with call...");
+    if (VDBG) Log.v(TAG, "- uri: " + uri);
+    if (VDBG) Log.v(TAG, "- actual number to dial: '" + number + "'");
+
+    startSipCallOptionHandler(context, intent, uri, number);
+
+    return true;
+}
+
+private void startSipCallOptionHandler(Context context, Intent intent,
+        Uri uri, String number) {
+    if (VDBG) {
+        Log.i(TAG, "startSipCallOptionHandler...");
+        Log.i(TAG, "- intent: " + intent);
+        Log.i(TAG, "- uri: " + uri);
+        Log.i(TAG, "- number: " + number);
+    }
+
+    // Create a copy of the original CALL intent that started the whole
+    // outgoing-call sequence.  This intent will ultimately be passed to
+    // CallController.placeCall() after the SipCallOptionHandler step.
+
+    Intent newIntent = new Intent(Intent.ACTION_CALL, uri);
+    newIntent.putExtra(EXTRA_ACTUAL_NUMBER_TO_DIAL, number);
+    CallGatewayManager.checkAndCopyPhoneProviderExtras(intent, newIntent);
+
+    // Finally, launch the SipCallOptionHandler, with the copy of the
+    // original CALL intent stashed away in the EXTRA_NEW_CALL_INTENT
+    // extra.
+
+    Intent selectPhoneIntent = new Intent(ACTION_SIP_SELECT_PHONE, uri);
+    selectPhoneIntent.setClass(context, SipCallOptionHandler.class);
+    selectPhoneIntent.putExtra(EXTRA_NEW_CALL_INTENT, newIntent);
+    selectPhoneIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+    if (DBG) {
+        Log.v(TAG, "startSipCallOptionHandler(): " +
+                "calling startActivity: " + selectPhoneIntent);
+    }
+    context.startActivity(selectPhoneIntent);// 启动界面
+    // ...and see SipCallOptionHandler.onCreate() for the next step of the sequence.
+}
+
+在SipCallOptionHandler中查看:
+onCreate()---> setResultAndFinish(){
+    PhoneGlobals.getInstance().callController.placeCall(mIntent);
+}
+
+
+接下查看CallController:
+public void placeCall(Intent intent) {
+    String action = intent.getAction();
+    Uri uri = intent.getData();
+    String scheme = uri.getScheme();
+    String number = PhoneNumberUtils.getNumberFromIntent(intent, mApp);
+
+    // Check to see if this is an OTASP call (the "activation" call
+    // used to provision CDMA devices), and if so, do some
+    // OTASP-specific setup.
+    Phone phone = mApp.getPhone(phoneId);/** SPRD: modify for dsds */
+    if (TelephonyCapabilities.supportsOtasp(phone)) {
+        checkForOtaspCall(intent);
+    }
+    mApp.setRestoreMuteOnInCallResume(false);
+    CallStatusCode status = placeCallInternal(intent);// 重点拨号
+    switch (status) {
+        // Call was placed successfully:
+        case SUCCESS:
+        case EXITED_ECM:
+            break;
+        default:
+            handleOutgoingCallError(status, phoneId);
+            break;
+    }
+}
+
+private CallStatusCode placeCallInternal(Intent intent) {
+    final Uri uri = intent.getData();
+    final String scheme = (uri != null) ? uri.getScheme() : null;
+    String number;
+    Phone phone = null;
+
+    // Check the current ServiceState to make sure it's OK
+    // to even try making a call.
+    CallStatusCode okToCallStatus = checkIfOkToInitiateOutgoingCall(
+            mCM.getServiceState());
+
+    int callStatus = PhoneUtils.placeCall(mApp,
+                                          phone,
+                                          number,
+                                          contactUri,
+                                          (isEmergencyNumber || isEmergencyIntent),
+                                          rawGatewayInfo,
+                                          mCallGatewayManager);
+
+    switch (callStatus) {
+        case PhoneUtils.CALL_STATUS_DIALED:
+            boolean voicemailUriSpecified = scheme != null && scheme.equals("voicemail");
+            boolean exitedEcm = false;
+            if (PhoneUtils.isPhoneInEcm(phone) && !isEmergencyNumber) {
+                exitedEcm = true;  // this will cause us to return EXITED_ECM from this method
+            }
+
+            if (phone.getPhoneType() == PhoneConstants.PHONE_TYPE_CDMA) {
+                if (mApp.cdmaPhoneCallState.getCurrentCallState()
+                        == CdmaPhoneCallState.PhoneCallState.THRWAY_ACTIVE) {
+                    PhoneUtils.setMute(false);
+                    mApp.cdmaPhoneCallState.setThreeWayCallOrigState(true);
+                    sendEmptyMessageDelayed(THREEWAY_CALLERINFO_DISPLAY_DONE,
+                                            THREEWAY_CALLERINFO_DISPLAY_TIME);
+                }
+            }
+
+            // Success!
+            if (exitedEcm) {
+                return CallStatusCode.EXITED_ECM;
+            } else {
+                return CallStatusCode.SUCCESS;
+            }
+
+        case PhoneUtils.CALL_STATUS_DIALED_MMI:
+            return CallStatusCode.DIALED_MMI;
+
+        case PhoneUtils.CALL_STATUS_FAILED:
+            mCallLogger.logCall(null /* callerInfo */, number, 0 /* presentation */,
+                    Calls.OUTGOING_TYPE, System.currentTimeMillis(), 0 /* duration */);
+            return CallStatusCode.CALL_FAILED;
+
+        default:
+            return CallStatusCode.SUCCESS;  // Try to continue anyway...
+    }
+}
+
+public static int placeCall(Context context, Phone phone, String number, Uri contactRef,
+        boolean isEmergencyCall, RawGatewayInfo gatewayInfo, CallGatewayManager callGateway) {
+    final Uri gatewayUri = gatewayInfo.gatewayUri;
+    final PhoneGlobals app = PhoneGlobals.getInstance();
+
+    boolean useGateway = false;
+    if (null != gatewayUri &&
+        !isEmergencyCall &&
+        PhoneUtils.isRoutableViaGateway(number)) {  // Filter out MMI, OTA and other codes.
+        useGateway = true;
+    }
+
+    int status = CALL_STATUS_DIALED;
+    Connection connection;
+    String numberToDial;
+    if (useGateway) {
+        if (null == gatewayUri || !Constants.SCHEME_TEL.equals(gatewayUri.getScheme())) {
+            return CALL_STATUS_FAILED;
+        }
+        numberToDial = gatewayUri.getSchemeSpecificPart();
+    } else {
+        numberToDial = number;
+    }
+
+    final boolean initiallyIdle = app.mCM.getState() == PhoneConstants.State.IDLE;
+
+    try {
+        connection = app.mCM.dial(phone, numberToDial);
+    } catch (CallStateException ex) {
+        return CALL_STATUS_FAILED;
+    }
+
+    int phoneType = phone.getPhoneType();
+    if (null == connection) {
+        if (phoneType == PhoneConstants.PHONE_TYPE_GSM && gatewayUri == null) {
+            status = CALL_STATUS_DIALED_MMI;
+        } else {
+            status = CALL_STATUS_FAILED;
+        }
+    } else {
+        if (callGateway != null) {
+            callGateway.setGatewayInfoForConnection(connection, gatewayInfo);
+        }
+
+        startGetCallerInfo(context, connection, null, null, gatewayInfo);
+
+        // Always set mute to off when we are dialing an emergency number
+        if (isEmergencyCall) {
+            setMute(false);
+        }
+
+        setAudioMode();
+
+        if (DBG) log("about to activate speaker");
+        // Check is phone in any dock, and turn on speaker accordingly
+        final boolean speakerActivated = activateSpeakerIfDocked(phone);
+
+        final BluetoothManager btManager = app.getBluetoothManager();
+
+        // See also similar logic in answerCall().
+        if (initiallyIdle && !speakerActivated && isSpeakerOn(app)
+                && !btManager.isBluetoothHeadsetAudioOn()) {
+            // This is not an error but might cause users' confusion. Add log just in case.
+            Log.i(LOG_TAG, "Forcing speaker off when initiating a new outgoing call...");
+            PhoneUtils.turnOnSpeaker(app, false, true);
+        }
+    }
+
+    return status;
+}
+
+至此基本的拨号流程, 就到此结束. 后面两个篇章进行分析: 一个是继续拨号流程的分析, 一个是MMI码分析
+
+
