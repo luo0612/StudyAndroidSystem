@@ -33,8 +33,173 @@ public static int placeCall(Context context, Phone phone, String number, Uri con
     }
 	
 3. 查看Phone.dial()方法实现流程
+3.1 首先GsmPhone的dial()方法的处理流程
+public Connection dial(String dialString) throws CallStateException {
+    return dial(dialString, null);
+}
+@Override
+public Connection dial (String dialString, UUSInfo uusInfo) throws CallStateException {
+    /* SPRD: Add for VoWifi @{ */
+    if (shouldPendingMO()) {
+        mPendingConnection = new GsmConnection(this.mContext, dialString, mCT,
+                getForegroundCall(), false);
+        Rlog.d(LOG_TAG, "dial->shouldPendingMO.");
+        notifyPreciseCallStateChanged();
+        return mPendingConnection;
+    }
+	
+	// 判断是否是紧急拨号
+    boolean isEmergency = PhoneNumberUtils.isEmergencyNumber(dialString);
+    ImsPhone imsPhone = mImsPhone;
+	
+	// 获取运营商配置管理
+    CarrierConfigManager configManager =
+            (CarrierConfigManager) mContext.getSystemService(Context.CARRIER_CONFIG_SERVICE);
+    boolean alwaysTryImsForEmergencyCarrierConfig = configManager.getConfigForPhoneId(getPhoneId())
+            .getBoolean(CarrierConfigManager.KEY_CARRIER_USE_IMS_FIRST_FOR_EMERGENCY_BOOL);
+
+	// volte 相关处理
+    boolean imsUseEnabled = ImsManager.isWfcEnabledByPlatform(mContext) 
+            && ImsManager.isWfcEnabledByUser(mContext)
+            && imsPhone != null && imsPhone.isWifiCallingEnabled()
+            && (imsPhone.getServiceState().getState() == ServiceState.STATE_IN_SERVICE
+                    || imsPhone.isImsRegistered());
+
+    boolean useImsForEmergency = imsPhone != null
+            && isEmergency
+            && alwaysTryImsForEmergencyCarrierConfig
+            //&& ImsManager.isNonTtyOrTtyOnVolteEnabled(mContext)
+            && (imsPhone.getServiceState().getState() != ServiceState.STATE_POWER_OFF)
+            // SPRD: add for bug 594286, Trying (non-IMS) CS Ecall when (non-IMS) in service
+            && !(getServiceState().getState() == ServiceState.STATE_IN_SERVICE
+            && imsPhone.getServiceState().getState() != ServiceState.STATE_IN_SERVICE);
 
 
+    if(imsPhone != null){
+        imsPhone.checkWfcWifiOnlyModeBeforeDial(mImsPhone, mContext);
+    }
+
+    int type = -2;
+    try{
+        mImsServiceEx = getIImsServiceEx();
+        if(mImsServiceEx != null){
+            type = mImsServiceEx.getCurrentImsFeature();
+        }else{
+        }
+    }catch(RemoteException e){
+        e.printStackTrace();
+    }
+    if (LOCAL_DEBUG){
+        Rlog.d(LOG_TAG, "type = " + type);
+    }
+
+
+    if (isEmergency && type == ImsConfig.FeatureConstants.FEATURE_TYPE_VOICE_OVER_WIFI) { 
+        if (isSupportVoWifiEccCall() && DialEccCallOnWowifi()) {
+            imsUseEnabled = true;
+            useImsForEmergency = true;
+        } else {
+            imsUseEnabled = false;
+            useImsForEmergency = false;
+        }
+    }
+
+    /* SPRD: add for bug 723035, android 4.4 start a VoLTE call through gsmphone,
+     * only VoWifi call started by ImsPhone,
+     * so if there is a GsmCall, new call will start still by GsmPhone.
+     * and if there is a ImsCall, new call will start still by ImsPhone.
+     */
+    if ((!isInCall() &&(imsUseEnabled || useImsForEmergency)) || (imsPhone != null && imsPhone.isInCall())) {//SPRD:modify for bug771503
+        try {
+            if (LOCAL_DEBUG) Rlog.d(LOG_TAG, "Trying IMS PS call");
+            return imsPhone.dial(dialString, uusInfo, VideoProfile.STATE_AUDIO_ONLY, null);
+        } catch (CallStateException e) {
+            if (LOCAL_DEBUG) Rlog.d(LOG_TAG, "IMS PS call exception " + e +
+                    "imsUseEnabled =" + imsUseEnabled + ", imsPhone =" + imsPhone);
+            if (!ImsPhone.CS_FALLBACK.equals(e.getMessage())) {
+                CallStateException ce = new CallStateException(e.getMessage());
+                ce.setStackTrace(e.getStackTrace());
+                throw ce;
+            }
+        }
+    }
+    /* @} */
+
+	//Added by wanghao, 2017.10.23, record outNumber
+	getRingingCall().setOutNumber(dialString);
+
+    // Need to make sure dialString gets parsed properly
+    String newDialString = PhoneNumberUtils.stripSeparators(dialString);
+
+    // handle in-call MMI first if applicable
+    if (handleInCallMmiCommands(newDialString)) { // 处理通话中的USSD码, 就是西班牙要求的1SEND, 2SEND, 3SEND, 4SEND
+        return null;
+    }
+
+    // Only look at the Network portion for mmi
+    String networkPortion = PhoneNumberUtils.extractNetworkPortionAlt(newDialString);
+    GsmMmiCode mmi =
+            GsmMmiCode.newFromDialString(networkPortion, this, mUiccApplication.get());
+    if (LOCAL_DEBUG) Rlog.d(LOG_TAG,
+                           "dialing w/ mmi '" + mmi + "'...");
+
+    if (mmi == null) {
+        return mCT.dial(newDialString, uusInfo);
+    } else if (mmi.isTemporaryModeCLIR()) {
+        return mCT.dial(mmi.mDialingNumber, mmi.getCLIRMode(), uusInfo);
+    } else {
+        mPendingMMIs.add(mmi);
+        mMmiRegistrants.notifyRegistrants(new AsyncResult(null, mmi, null));
+        mmi.processCode();
+
+        // FIXME should this return null or something else?
+        return null;
+    }
+}
+
+3.1.1 查看handleInCallMmiCommands()方法
+@Override
+public boolean handleInCallMmiCommands(String dialString) {
+	ImsPhone imsPhone = mImsPhone;
+    if (imsPhone != null
+            && imsPhone.getServiceState().getState() == ServiceState.STATE_IN_SERVICE
+            && imsPhone.isInCall()) {
+        return imsPhone.handleInCallMmiCommands(dialString);
+    }
+
+    if (!isInCall()) {
+        return false;
+    }
+
+    boolean result = false;
+    char ch = dialString.charAt(0);
+    switch (ch) {
+        case '0':
+            result = handleCallDeflectionIncallSupplementaryService(
+                    dialString);
+            break;
+        case '1':
+            result = handleCallWaitingIncallSupplementaryService(
+                    dialString);
+            break;
+        case '2':
+            result = handleCallHoldIncallSupplementaryService(dialString);
+            break;
+        case '3':
+            result = handleMultipartyIncallSupplementaryService(dialString);
+            break;
+        case '4':
+            result = handleEctIncallSupplementaryService(dialString);
+            break;
+        case '5':
+            result = handleCcbsIncallSupplementaryService(dialString);
+            break;
+        default:
+            break;
+    }
+
+    return result;
+}
 
 *146#
 (
