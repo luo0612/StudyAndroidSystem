@@ -137,6 +137,7 @@ public Connection dial (String dialString, UUSInfo uusInfo) throws CallStateExce
     }
 
     // Only look at the Network portion for mmi
+	// 只查看MMI的网络部分
     String networkPortion = PhoneNumberUtils.extractNetworkPortionAlt(newDialString);
     GsmMmiCode mmi =
             GsmMmiCode.newFromDialString(networkPortion, this, mUiccApplication.get());
@@ -148,9 +149,9 @@ public Connection dial (String dialString, UUSInfo uusInfo) throws CallStateExce
     } else if (mmi.isTemporaryModeCLIR()) {
         return mCT.dial(mmi.mDialingNumber, mmi.getCLIRMode(), uusInfo);
     } else {
-        mPendingMMIs.add(mmi);
-        mMmiRegistrants.notifyRegistrants(new AsyncResult(null, mmi, null));
-        mmi.processCode();
+        mPendingMMIs.add(mmi); // 添加到MMI的发送列表
+        mMmiRegistrants.notifyRegistrants(new AsyncResult(null, mmi, null));// 
+        mmi.processCode();// 处理MMI码
 
         // FIXME should this return null or something else?
         return null;
@@ -175,20 +176,25 @@ public boolean handleInCallMmiCommands(String dialString) {
     char ch = dialString.charAt(0);
     switch (ch) {
         case '0':
+		    // 转接
             result = handleCallDeflectionIncallSupplementaryService(
                     dialString);
             break;
         case '1':
+		    // 呼叫等待
             result = handleCallWaitingIncallSupplementaryService(
                     dialString);
             break;
         case '2':
+		    // 保持
             result = handleCallHoldIncallSupplementaryService(dialString);
             break;
         case '3':
+		    // 三方会议
             result = handleMultipartyIncallSupplementaryService(dialString);
             break;
         case '4':
+		    // 呼叫转接
             result = handleEctIncallSupplementaryService(dialString);
             break;
         case '5':
@@ -201,6 +207,373 @@ public boolean handleInCallMmiCommands(String dialString) {
     return result;
 }
 
+4.
+    /** Process a MMI code or short code...anything that isn't a dialing number */
+void processCode () {
+        /* SPRD: add for bug791386 @{ */
+        if (mSc != null && ArrayUtils.contains(SUPPLEMENTARY_SERVICE, mSc)
+                && TelephonyManager.getDefaultDataPhoneId(mContext) == mPhone.getPhoneId()
+                && mPhone.getDataConnectionState(XCAP_TYPE) != PhoneConstants.DataState.CONNECTED) {
+            Rlog.d(LOG_TAG, "need request xcap");
+            mHasConnectSuccess = false;
+            if (mDcReceiver == null) {
+                mDcReceiver = new DataConnectionBroadcastReceiver();
+                setMobileDataEnabled(true, false);
+            }
+        } else {
+            processCodeAfterRequest();
+        }
+        /* @} */
+    }
+	
+	
+5.     
+    private void processCodeAfterRequest () {
+        try {
+            if (isShortCode()) {
+                // These just get treated as USSD.
+                sendUssd(mDialingNumber);
+            } else if (mDialingNumber != null) {
+                // We should have no dialing numbers here
+                throw new RuntimeException ("Invalid or Unsupported MMI Code");
+            } else if (mSc != null && mSc.equals(SC_CLIP)/*30*/) {// 获取来电显示
+			    // 作为被叫者获取CLIP显示
+				// *30#
+                if (isInterrogate()) {
+                    mPhone.mCi.queryCLIP(
+                            obtainMessage(EVENT_QUERY_COMPLETE, this));
+                } else {
+                    throw new RuntimeException ("Invalid or Unsupported MMI Code");
+                }
+            } else if (mSc != null && mSc.equals(SC_CLIR)/*31*/) { //暂停来电号码(CLIR)的传输
+			    // 用于后续所有调用
+				// #31#
+                if (isActivate()) {
+                    mPhone.mCi.setCLIR(CommandsInterface.CLIR_INVOCATION,
+                        obtainMessage(EVENT_SET_COMPLETE, this));
+                } else if (isDeactivate()) {
+                    mPhone.mCi.setCLIR(CommandsInterface.CLIR_SUPPRESSION,
+                        obtainMessage(EVENT_SET_COMPLETE, this));
+                } else if (isInterrogate()) {
+                    mPhone.mCi.getCLIR(
+                        obtainMessage(EVENT_GET_CLIR_COMPLETE, this));
+                } else {
+                    throw new RuntimeException ("Invalid or Unsupported MMI Code");
+                }
+            } else if (mSc != null && mSc.equals(SC_COLP)) { // 通话线路验证显示是一种移动通信的增值服务
+			
+                if (isInterrogate()) {
+                    mPhone.mCi.queryCOLP(
+                            obtainMessage(EVENT_QUERY_LI_COMPLETE , this));
+                } else {
+                    throw new RuntimeException ("Invalid or Unsupported MMI Code");
+                }
+
+            } else if (mSc != null && mSc.equals(SC_COLR)) {//被叫通话线路识别限制
+                if (isInterrogate()) {
+                    mPhone.mCi.queryCOLR(
+                            obtainMessage(EVENT_QUERY_LI_COMPLETE , this));
+                } else {
+                    throw new RuntimeException ("Invalid or Unsupported MMI Code");
+                }
+
+            } else if (isServiceCodeCallForwarding(mSc)) { // 呼叫转移
+                String dialingNumber = mSia;
+                int serviceClass = siToServiceClass(mSib);
+                int reason = scToCallForwardReason(mSc);
+                int time = siToTime(mSic);
+
+                if (isInterrogate()) {
+                    mPhone.mCi.queryCallForwardStatus(
+                            reason, serviceClass,  dialingNumber,
+                                obtainMessage(EVENT_QUERY_CF_COMPLETE, this));
+                } else {
+                    int cfAction;
+
+                    if (isActivate()) {
+                        if (isEmptyOrNull(dialingNumber)) {
+                            cfAction = CommandsInterface.CF_ACTION_ENABLE;
+                            mIsCallFwdReg = false;
+                        } else {
+                            cfAction = CommandsInterface.CF_ACTION_REGISTRATION;
+                            mIsCallFwdReg = true;
+                        }
+                    } else if (isDeactivate()) {
+                        cfAction = CommandsInterface.CF_ACTION_DISABLE;
+                    } else if (isRegister()) {
+                        cfAction = CommandsInterface.CF_ACTION_REGISTRATION;
+                    } else if (isErasure()) {
+                        cfAction = CommandsInterface.CF_ACTION_ERASURE;
+                    } else {
+                        throw new RuntimeException ("invalid action");
+                    }
+
+                    int isSettingUnconditionalVoice =
+                        (((reason == CommandsInterface.CF_REASON_UNCONDITIONAL) ||
+                                (reason == CommandsInterface.CF_REASON_ALL)) &&
+                                (((serviceClass & CommandsInterface.SERVICE_CLASS_VOICE) != 0) ||
+                                 (serviceClass == CommandsInterface.SERVICE_CLASS_NONE))) ? 1 : 0;
+
+                    int isEnableDesired =
+                        ((cfAction == CommandsInterface.CF_ACTION_ENABLE) ||
+                                (cfAction == CommandsInterface.CF_ACTION_REGISTRATION)) ? 1 : 0;
+
+                    Rlog.d(LOG_TAG, "is CF setCallForward");
+                    mPhone.mCi.setCallForward(cfAction, reason, serviceClass,
+                            dialingNumber, time, obtainMessage(
+                                    EVENT_SET_CFF_COMPLETE,
+                                    isSettingUnconditionalVoice,
+                                    isEnableDesired, this));
+                }
+            } else if (isServiceCodeCallBarring(mSc)) { // 呼叫限制
+                // sia = password
+                // sib = basic service group
+
+                String password = mSia;
+                int serviceClass = siToServiceClass(mSib);
+                String facility = scToBarringFacility(mSc);
+
+                if (isInterrogate()) {
+                    mPhone.mCi.queryFacilityLock(facility, password,
+                            serviceClass, obtainMessage(EVENT_QUERY_COMPLETE, this));
+                } else if (isActivate() || isDeactivate()) {
+                    mPhone.mCi.setFacilityLock(facility, isActivate(), password,
+                            serviceClass, obtainMessage(EVENT_SET_COMPLETE, this));
+                } else {
+                    throw new RuntimeException ("Invalid or Unsupported MMI Code");
+                }
+
+            } else if (mSc != null && mSc.equals(SC_PWD/*03*/)) {//更改网络密码
+			    // 密码取决于网络, 某些网络上默认为0000,见调用限制功能 *33	
+				// * * 03 * 330 * 旧密码 * 新密码 * 新密码 #
+                // sia = fac
+                // sib = old pwd
+                // sic = new pwd
+                // pwd = new pwd
+                String facility;
+                String oldPwd = mSib;
+                String newPwd = mSic;
+                if (isActivate() || isRegister()) {
+                    // Even though ACTIVATE is acceptable, this is really termed a REGISTER
+                    mAction = ACTION_REGISTER;
+
+                    if (mSia == null) {
+                        // If sc was not specified, treat it as BA_ALL.
+                        facility = CommandsInterface.CB_FACILITY_BA_ALL;
+                    } else {
+                        facility = scToBarringFacility(mSia);
+                    }
+                    /* SPRD:Bug#298177: Not send cm_service_req @{ */
+                    /*if (newPwd.equals(mPwd)) {
+                        mPhone.mCi.changeBarringPassword(facility, oldPwd,
+                                newPwd, obtainMessage(EVENT_SET_COMPLETE, this));
+                    } else {
+                        // password mismatch; return error
+                        handlePasswordError(com.android.internal.R.string.passwordIncorrect);
+                    }*/
+                    mPhone.mCi.mmiEnterSim(mPoundString,
+                            obtainMessage(EVENT_SET_COMPLETE, this));
+                    /* @} */
+                } else {
+                    throw new RuntimeException ("Invalid or Unsupported MMI Code");
+                }
+
+            } else if (mSc != null && mSc.equals(SC_WAIT/*43*/)) { //线路忙时来电通知
+			    // * 43 * BS #
+                Log.d(LOG_TAG, "mSc != null && mSc.equals(SC_WAIT)");
+                // sia = basic service group
+                int serviceClass = siToServiceClass(mSia);
+
+                if (isActivate() || isDeactivate()) {
+                    mPhone.mCi.setCallWaiting(isActivate(), serviceClass,
+                            obtainMessage(EVENT_SET_COMPLETE, this));
+                } else if (isInterrogate()) {
+                    mPhone.mCi.queryCallWaiting(serviceClass,
+                            obtainMessage(EVENT_QUERY_COMPLETE, this));
+                } else {
+                    throw new RuntimeException ("Invalid or Unsupported MMI Code");
+                }
+            } else if (isPinPukCommand()) { // 是否是pin, puk指令
+                Log.d(LOG_TAG, "isPinPukCommand()");
+                // TODO: This is the same as the code in CmdaMmiCode.java,
+                // MmiCode should be an abstract or base class and this and
+                // other common variables and code should be promoted.
+
+                // sia = old PIN or PUK
+                // sib = new PIN
+                // sic = new PIN
+                String oldPinOrPuk = mSia;
+                String newPinOrPuk = mSib;
+                int pinLen = newPinOrPuk.length();
+                if (isRegister()) {
+                    if (!newPinOrPuk.equals(mSic)) {
+                        // password mismatch; return error
+                        /*
+                         * SPRD:
+                         *   Bug262856
+                         *   modify pin/pin2/puk/puk2 related toast.
+                         *
+                         * @orig
+                        handlePasswordError(com.android.internal.R.string.mismatchPin);
+                        *
+                        * @{
+                        */
+                        if (mSc.equals(SC_PIN)) {
+                            handlePasswordError(com.android.internal.R.string.mismatchPin);
+                        } else if (mSc.equals(SC_PIN2)) {
+                            handlePasswordError(com.android.internal.R.string.mismatchPin2);
+                        } else if (mSc.equals(SC_PUK)) {
+                            // SPRD: modify for bug 279179
+                            handlePasswordError(com.android.internal.R.string.mismatchPin);
+                        } else if (mSc.equals(SC_PUK2)) {
+                            // SPRD: modify for bug 279180
+                            handlePasswordError(com.android.internal.R.string.mismatchPin2);
+                        }
+                        /*
+                        * @}
+                        */
+                    } else if (pinLen < 4 || pinLen > 8 ) {
+                        // invalid length
+                        handlePasswordError(com.android.internal.R.string.invalidPin);
+                    } else if (mSc.equals(SC_PIN)
+                            && mUiccApplication != null
+                            && mUiccApplication.getState() == AppState.APPSTATE_PUK) {
+                        // Sim is puk-locked
+                        handlePasswordError(com.android.internal.R.string.needPuk);
+                    } else if (mUiccApplication != null) {
+                        Rlog.d(LOG_TAG, "process mmi service code using UiccApp sc=" + mSc);
+                        /* SPRD: Porting USSD. @{ */
+                        if (oldPinOrPuk.length() < 4
+                                || oldPinOrPuk.length() > 8) {
+                            handlePasswordError(com.android.internal.R.string.invalidPin);
+                            return;
+                        }
+                        /* @} */
+                        // We have an app and the pre-checks are OK
+                        if (mSc.equals(SC_PIN)) {
+                            /* SPRD: modify for bug279175 @{ */
+                            if (mPhone.getIccCard().getIccLockEnabled()) {
+                                mUiccApplication.changeIccLockPassword(oldPinOrPuk, newPinOrPuk,
+                                        obtainMessage(EVENT_SET_COMPLETE, this));
+                            } else {
+                                handlePasswordError(com.android.internal.R.string.enablePin);
+                            }
+                            /* @} */
+                        } else if (mSc.equals(SC_PIN2)) {
+                            mUiccApplication.changeIccFdnPassword(oldPinOrPuk, newPinOrPuk,
+                                    obtainMessage(EVENT_SET_COMPLETE, this));
+                        } else if (mSc.equals(SC_PUK)) {
+                            /* SPRD: Porting USSD. @{ */
+                            if (oldPinOrPuk.length() != 8) {
+                                handlePasswordError(com.android.internal.R.string.invalidPuk);
+                                return;
+                            }
+                            /* @} */
+                            mUiccApplication.supplyPuk(oldPinOrPuk, newPinOrPuk,
+                                    obtainMessage(EVENT_SET_COMPLETE, this));
+                        } else if (mSc.equals(SC_PUK2)) {
+                            mUiccApplication.supplyPuk2(oldPinOrPuk, newPinOrPuk,
+                                    obtainMessage(EVENT_SET_COMPLETE, this));
+                        } else {
+                            throw new RuntimeException("uicc unsupported service code=" + mSc);
+                        }
+                    } else {
+                        throw new RuntimeException("No application mUiccApplicaiton is null");
+                    }
+                } else {
+                    throw new RuntimeException ("Ivalid register/action=" + mAction);
+                }
+            } else if (mPoundString != null) {
+                Log.d(LOG_TAG, "mPoundString != null");
+                sendUssd(mPoundString);
+            } else {
+                throw new RuntimeException ("Invalid or Unsupported MMI Code");
+            }
+        } catch (RuntimeException exc) {
+            mState = State.FAILED;
+            mMessage = mContext.getText(com.android.internal.R.string.mmiError);
+            mPhone.onMMIDone(this);
+        }
+    }
+
+6. 发送USSD码
+    void sendUssd(String ussdMessage) {
+        Log.d(LOG_TAG, "sendUssd: "+ussdMessage);
+        // Treat this as a USSD string
+        mIsPendingUSSD = true;
+
+        // Note that unlike most everything else, the USSD complete
+        // response does not complete this MMI code...we wait for
+        // an unsolicited USSD "Notify" or "Request".
+        // The matching up of this is done in GSMPhone.
+
+        mPhone.mCi.sendUSSD(ussdMessage,
+            obtainMessage(EVENT_USSD_COMPLETE, this));
+    }
+
+7. 处理USS码发送完成的回调消息	
+@Override
+public void handleMessage (Message msg) {
+
+            case EVENT_USSD_COMPLETE:
+                ar = (AsyncResult) (msg.obj);
+
+                if (ar.exception != null) {
+                    mState = State.FAILED;
+                    mMessage = getErrorMessage(ar);
+
+                    mPhone.onMMIDone(this);
+                }
+
+                // Note that unlike most everything else, the USSD complete
+                // response does not complete this MMI code...we wait for
+                // an unsolicited USSD "Notify" or "Request".
+                // The matching up of this is done in GSMPhone.
+
+            break;
+}
+
+8. 在GSMPhone中处理发送完成的的消息
+    /**
+     * Removes the given MMI from the pending list and notifies
+     * registrants that it is complete.
+     * @param mmi MMI that is done
+     */
+    /*package*/ void
+    onMMIDone(GsmMmiCode mmi) {
+        /* SPRD: add for bug791386 @{ */
+        if (mmi != null) {
+            mmi.setMobileDataEnabled(false, false);
+        }
+        /* @} */
+        /* Only notify complete if it's on the pending list.
+         * Otherwise, it's already been handled (eg, previously canceled).
+         * The exception is cancellation of an incoming USSD-REQUEST, which is
+         * not on the list.
+         */
+        if (mPendingMMIs.remove(mmi)/*从发送列表中移除*/ || mmi.isUssdRequest()/*判断是否是Ussd请求*/) {
+            mMmiCompleteRegistrants.notifyRegistrants(
+                new AsyncResult(null, mmi, null));
+        }
+    }
+
+9. 在PhoneBase中注册MMI码完成的监听
+// Inherited documentation suffices.
+@Override
+public void registerForMmiComplete(Handler h, int what, Object obj) {
+    checkCorrectThread(h);
+
+    mMmiCompleteRegistrants.addUnique(h, what, obj);
+}
+
+// Inherited documentation suffices.
+@Override
+public void unregisterForMmiComplete(Handler h) {
+    checkCorrectThread(h);
+
+    mMmiCompleteRegistrants.remove(h);
+}
+ 
 *146#
 (
 (\\*|#|\\*#|\\*\\*|##) // 开头: 以*, #, *#, **, ## 开头
