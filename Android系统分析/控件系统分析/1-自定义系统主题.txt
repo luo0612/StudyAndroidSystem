@@ -1,0 +1,50 @@
+1. 在frameworks/base/core/res/res/values/themes.xml中添加自定义的主题
+    <!-- SPRD  New UI for Mocor5 -->
+    <style name="Theme.Holo.Light.NewUI" parent="Theme.Holo.Light">
+        <item name="listDivider">@null</item>
+        <item name="listSeparatorTextViewStyle">@android:style/Widget.Holo.Light.TextView.ListSeparator.NewUI</item>         
+
+        <item name="alertDialogIcon">@null</item>
+        <item name="textAppearance">@android:style/TextAppearance.Holo.Light.NewUI</item>
+        <item name="textColorPrimary">@android:color/primary_text_holo_light_newui</item>
+        <item name="textColorSecondary">@android:color/secondary_text_holo_light_newui</item>
+        <!-- EditText color -->
+        <item name="editTextColor">@android:color/primary_text_holo_light</item>
+        <!-- ActionBar -->        
+        <item name="android:actionBarStyle">@android:style/Widget.Holo.Light.ActionBar.NewUI</item>
+        <item name="actionBarTabTextStyle">@style/Widget.Holo.Light.ActionBar.TabText.NewUI</item>
+        <item name="actionBarSize">@dimen/action_bar_height_newui</item>
+        <item name="actionBarTabStyle">@style/Widget.Holo.Light.ActionBar.TabView.NewUI</item>        
+
+        <item name="textColorAlertDialogListItem">@android:color/primary_text_holo_light_newui</item>
+        <!-- Button styles -->
+        <item name="buttonStyle">@android:style/Widget.Holo.Light.Button.NewUI</item>
+        <item name="buttonStyleSmall">@android:style/Widget.Holo.Light.Button.Small.NewUI</item>
+        <item name="buttonStyleToggle">@android:style/Widget.Holo.Light.Button.Toggle.NewUI</item>
+        <!-- Radio Button -->
+        <item name="listChoiceIndicatorSingle">@android:drawable/btn_radio_holo_light_newui</item>
+        <!-- Check Button -->        
+        <item name="listChoiceIndicatorMultiple">@android:drawable/btn_check_holo_light_newui</item>
+        <!-- Preference Style -->
+        <item name="preferenceFragmentStyle">@style/PreferenceFragment.Holo.NewUI</item>
+        <item name="preferenceFragmentListStyle">@style/PreferenceFragmentListNewUI</item>
+        <item name="preferenceListStyle">@style/PreferenceHeaderListNewUI</item>
+        <item name="preferenceFragmentPaddingSide">@dimen/preference_fragment_padding_side_newui</item>
+        <!-- Switch Style -->
+        <item name="switchStyle">@android:style/Widget.Holo.Light.CompoundButton.Switch.NewUI</item>
+        <item name="textAppearanceLargePopupMenu">@android:style/TextAppearance.Holo.Light.Widget.PopupMenu.Large.NewUI</item>
+        <!-- List attributes -->
+        <item name="listPreferredItemHeightSmall">40px</item>  
+        <item name="spinnerDropDownItemStyle">@android:style/Widget.Holo.Light.DropDownItem.Spinner.NewUI</item>
+        <item name="textViewStyle">@android:style/Widget.Holo.Light.TextView.NewUI</item>
+    </style>
+
+2. 第二步在frameworks.base/core/res/res/values/public/xml中添加自定义的主题
+	<public type="style" name="Theme.Holo.Light.NewUI" id="0x010301e5" />
+	
+3. 获取系统的属性值:
+Activity:
+int[] attrsArray = { android.R.attr.listPreferredItemHeightSmall };  
+TypedArray typedArray = obtainStyledAttributes(attrsArray);  
+int minHeight = typedArray.getDimensionPixelSize(0, defaultMinHei);  
+  
